@@ -523,6 +523,9 @@ final class AgentAttachStore {
                 self.abortTerminalRecoveryOffStage(ownedBy: recoveryOwner)
                 return
             }
+            // After the queued leave has finished. Resetting earlier would
+            // let a drop start while staging is still tearing down.
+            self.composer.resumeDroppedImagesAfterRejoin()
             if requiresFullReplacement, self.terminal.status != .stopped {
                 await self.terminal.stop(preservingPendingPaste: true)
                 guard self.terminalRecoveryOwner == recoveryOwner else { return }

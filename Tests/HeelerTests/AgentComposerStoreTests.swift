@@ -1391,6 +1391,64 @@ struct AgentComposerStoreTests {
         #expect(store.messages.isEmpty)
     }
 
+    @Test func rejoinAfterLeaveLetsALaterDropStageAndRestoresSend() async throws {
+        let gate = ScriptedTransportCallGate()
+        let counter = LeaveStageCounter(gate: gate)
+        let jpeg = try Self.tinyJPEGData()
+        let store = Self.draftOnlyStore()
+        let attach = AgentAttachStore(
+            target: "w1:p1",
+            paneTitle: "pane",
+            transportGeneration: nil,
+            isOnStage: { true },
+            runTerminal: { _, _ in },
+            stageImage: { _, _ in try await counter.stage() },
+            stageFile: { _, _ in try StagedFile(path: "/tmp/heeler-drop.txt") },
+            composer: store,
+            closePane: {})
+
+        store.acceptDrop([
+            .image(jpeg, suggestedName: "a.jpg")
+        ])
+        try await waitUntil(
+            "the first dropped image should occupy staging",
+            timeout: .seconds(5)
+        ) {
+            attach.staging.state.isBusy
+        }
+        let leftID = attach.terminalID
+
+        let leave = attach.leave()
+        await gate.open()
+        await leave.value
+        #expect(!store.hasPendingDroppedImages)
+        #expect(!store.canSend)
+
+        attach.rejoin()
+        try await waitUntil(
+            "rejoin should rebuild the terminal after leave",
+            timeout: .seconds(5)
+        ) {
+            attach.terminalID != leftID
+        }
+
+        store.acceptDrop([
+            .image(jpeg, suggestedName: "b.jpg")
+        ])
+        try await waitUntil(
+            "the drop after rejoin should stage",
+            timeout: .seconds(5)
+        ) {
+            store.draft.contains("/tmp/leave-") && !store.hasPendingDroppedImages
+        }
+
+        #expect(store.hasPendingDroppedImages == false)
+        #expect(store.canSend)
+        #expect(AgentComposerStore.containsDropPlaceholder(store.draft) == false)
+        #expect(store.sendAccessibilityHint == "Delivers the complete draft to the Agent")
+        #expect(await counter.count >= 1)
+    }
+
     @Test func teardownAbandonStopsTheQueueBeforeStagingLeave() async throws {
         let gate = ScriptedTransportCallGate()
         let fixture = try Self.makeDropStagingFixture(

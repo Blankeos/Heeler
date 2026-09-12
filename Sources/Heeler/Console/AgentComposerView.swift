@@ -236,6 +236,13 @@ struct AgentComposerView: View {
                             }
 
                             Spacer(minLength: 0)
+                            if store.hasPendingDroppedImages {
+                                Text(store.sendAccessibilityHint)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .accessibilityHidden(true)
+                            }
                             AgentComposerSendButton(
                                 isEnabled: store.canSend,
                                 accessibilityHint: store.sendAccessibilityHint

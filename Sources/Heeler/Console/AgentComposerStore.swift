@@ -8,10 +8,12 @@ protocol ComposerDraftOperations: AnyObject {
     func replaceDraft(with text: String)
     func insertIntoDraft(_ text: String)
     func abandonDroppedImagesForTeardown()
+    func resumeDroppedImagesAfterRejoin()
 }
 
 extension ComposerDraftOperations {
     func abandonDroppedImagesForTeardown() {}
+    func resumeDroppedImagesAfterRejoin() {}
 }
 
 /// Owns Agent detail's local draft and delivery state. Draft edits do not
@@ -235,6 +237,13 @@ final class AgentComposerStore: ComposerDraftOperations {
             applyTokenReplacement(item.placeholder, firstReplacement: "")
         }
         pendingDroppedImages.removeAll()
+    }
+
+    /// Called after a serial leave has finished. Same-store rejoin does not
+    /// reconstruct Attach or re-bind staging.
+    func resumeDroppedImagesAfterRejoin() {
+        isTearingDownDroppedImages = false
+        startNextDroppedImageIfNeeded()
     }
 
     /// Completes an inline Skill suggestion: swaps the typed trigger token at
