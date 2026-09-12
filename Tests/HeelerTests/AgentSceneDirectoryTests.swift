@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 
 @testable import Heeler
 
@@ -79,6 +80,40 @@ struct AgentDeepLinkPolicyTests {
         #expect(
             AgentDeepLinkPolicy.decide(target: nil, scenes: scenes, preferredSceneID: nil)
                 == .route(sceneID: first))
+    }
+}
+
+@MainActor
+private final class FakeSceneWindow: AgentSceneWindow {
+    var sceneWindowState = AgentSceneWindowState.connected
+}
+
+/// What a registered window's handle says about it.
+@Suite("Agent scene window state")
+struct AgentSceneWindowStateTests {
+    @Test func aWindowThatNeverAttachedIsPending() {
+        #expect(
+            AgentSceneWindowState.resolve(hasAttached: false, activationState: nil) == .pending)
+    }
+
+    @Test func aWindowWhoseSceneIsGoneIsDisconnected() {
+        #expect(
+            AgentSceneWindowState.resolve(hasAttached: true, activationState: nil)
+                == .disconnected)
+        #expect(
+            AgentSceneWindowState.resolve(hasAttached: true, activationState: .unattached)
+                == .disconnected)
+    }
+
+    /// A backgrounded window is still a window: it restores, and links may
+    /// bring it forward.
+    @Test(arguments: [
+        UIScene.ActivationState.foregroundActive, .foregroundInactive, .background,
+    ])
+    func anAttachedSceneIsConnected(state: UIScene.ActivationState) {
+        #expect(
+            AgentSceneWindowState.resolve(hasAttached: true, activationState: state)
+                == .connected)
     }
 }
 
@@ -216,6 +251,85 @@ struct AgentSceneDirectoryTests {
 
         #expect(closedRouter.path.isEmpty)
         #expect(openRouter.path == [target("w1:p1").agentID])
+    }
+
+    // MARK: Windows that closed without unregistering
+
+    /// SwiftUI promises no `onDisappear` for a closed or system-disconnected
+    /// scene, so a window can stay registered after it is gone.
+    @Test func aClosedWindowThatNeverUnregisteredReceivesNothing() {
+        let directory = AgentSceneDirectory()
+        let closedWindow = FakeSceneWindow()
+        let closedRouter = makeRouter(knowing: ["w1:p1"])
+        let openRouter = makeRouter(knowing: ["w1:p1"])
+        let closed = UUID()
+        var activations: [UUID] = []
+        directory.register(sceneID: closed, router: closedRouter, window: closedWindow) {
+            activations.append(closed)
+        }
+        directory.register(sceneID: UUID(), router: openRouter, window: FakeSceneWindow()) {}
+        closedRouter.path = [target("w1:p1").agentID]
+        directory.sceneDidBecomeActive(sceneID: closed)
+
+        closedWindow.sceneWindowState = .disconnected
+        directory.open(target("w1:p1"))
+
+        #expect(activations.isEmpty)
+        #expect(openRouter.path == [target("w1:p1").agentID])
+    }
+
+    /// Open in New Window must open a window rather than "activate" one
+    /// that is gone.
+    @Test func openInNewWindowIgnoresAClosedWindowOnTheAgent() {
+        let directory = AgentSceneDirectory()
+        let closedWindow = FakeSceneWindow()
+        let router = makeRouter(knowing: ["w1:p1"])
+        directory.register(sceneID: UUID(), router: router, window: closedWindow) {}
+        router.path = [target("w1:p1").agentID]
+        #expect(directory.activateScene(presenting: target("w1:p1").agentID))
+
+        closedWindow.sceneWindowState = .disconnected
+
+        #expect(!directory.activateScene(presenting: target("w1:p1").agentID))
+        #expect(directory.keyScenePresentedAgent == nil)
+    }
+
+    /// A window registers before its `UIWindow` attaches; it is live then.
+    @Test func aWindowNotYetAttachedStillReceivesLinks() {
+        let directory = AgentSceneDirectory()
+        let pendingWindow = FakeSceneWindow()
+        pendingWindow.sceneWindowState = .pending
+        let router = makeRouter(knowing: ["w1:p1"])
+        directory.open(target("w1:p1"))
+
+        directory.register(sceneID: UUID(), router: router, window: pendingWindow) {}
+
+        #expect(router.path == [target("w1:p1").agentID])
+    }
+
+    @Test func aClosedWindowReleasesItsHostTerminal() {
+        let directory = AgentSceneDirectory()
+        let first = UUID()
+        let second = UUID()
+        let secondWindow = FakeSceneWindow()
+        let firstRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        let secondRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        directory.register(sceneID: first, router: firstRouter, window: FakeSceneWindow()) {}
+        directory.register(sceneID: second, router: secondRouter, window: secondWindow) {}
+        firstRouter.path = [target("w1:p1").agentID]
+        directory.sceneRouteDidChange(sceneID: first)
+        directory.sceneDidBecomeActive(sceneID: first)
+        secondRouter.path = [target("w1:p2").agentID]
+        directory.sceneRouteDidChange(sceneID: second)
+        directory.sceneDidBecomeActive(sceneID: second)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+
+        secondWindow.sceneWindowState = .disconnected
+        directory.takeOverTerminal(sceneID: first, hostID: hostID)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
     }
 
     // MARK: Same-Host terminal handoff

@@ -99,6 +99,14 @@ final class WindowReference {
     @ObservationIgnored private var keyObserver: (any NSObjectProtocol)?
 }
 
+extension WindowReference: AgentSceneWindow {
+    var sceneWindowState: AgentSceneWindowState {
+        AgentSceneWindowState.resolve(
+            hasAttached: attachments > 0,
+            activationState: storage?.windowScene?.activationState)
+    }
+}
+
 extension EnvironmentValues {
     /// The window of the scene this view belongs to, provided by the scene's
     /// root view. Nil outside a scene root (previews, hosted test views).

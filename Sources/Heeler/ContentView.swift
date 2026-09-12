@@ -57,7 +57,7 @@ struct ContentView: View {
             // route through the single-window rule, so it goes last.
             let draggedRoute = restoreRoute()
             app.sceneDirectory.register(
-                sceneID: sceneID, router: notificationRouter,
+                sceneID: sceneID, router: notificationRouter, window: window,
                 activate: { activateWindow() })
             window.observeBecomingKey { [directory = app.sceneDirectory, sceneID] in
                 directory.sceneDidBecomeActive(sceneID: sceneID)

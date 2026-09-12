@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UIKit
 
 /// What the deep-link policy needs to know about one connected window.
 struct AgentSceneState: Equatable, Sendable {
@@ -72,6 +73,38 @@ enum AgentDeepLinkPolicy {
     }
 }
 
+/// Whether a registered window is still on screen. SwiftUI's `onDisappear`
+/// makes no promise about closed or system-disconnected scenes, so the
+/// directory asks the window itself rather than trusting `unregister` to
+/// have run.
+enum AgentSceneWindowState: Equatable, Sendable {
+    /// Not attached to a `UIWindow` yet; a window that just registered counts
+    /// as live.
+    case pending
+    case connected
+    /// Its `UIWindow` is gone, or its scene is unattached.
+    case disconnected
+
+    /// `hasAttached` is whether a window was ever attached; `activationState`
+    /// is that window's scene state, nil when the window or its scene is gone.
+    static func resolve(
+        hasAttached: Bool, activationState: UIScene.ActivationState?
+    ) -> AgentSceneWindowState {
+        guard hasAttached else { return .pending }
+        guard let activationState, activationState != .unattached else {
+            return .disconnected
+        }
+        return .connected
+    }
+}
+
+/// The window handle a scene registers with, so the directory can skip a
+/// window that closed without delivering `onDisappear`.
+@MainActor
+protocol AgentSceneWindow: AnyObject {
+    var sceneWindowState: AgentSceneWindowState { get }
+}
+
 /// The app-wide registry of connected windows and the one place deep links
 /// enter. Each window owns its own `AgentNotificationRouter`; this directory
 /// decides which of those routers a link drives, through
@@ -86,6 +119,7 @@ enum AgentDeepLinkPolicy {
 final class AgentSceneDirectory {
     private struct Entry {
         let router: AgentNotificationRouter
+        let window: (any AgentSceneWindow)?
         let activate: @MainActor () -> Void
         var activationOrder: UInt64 = 0
         /// The Agent whose detail shows a Shell Terminal in this window.
@@ -107,15 +141,18 @@ final class AgentSceneDirectory {
     init() {}
 
     /// Connects a window. `activate` brings it forward when a link picks it;
-    /// it must be a no-op for a window that is already frontmost.
+    /// it must be a no-op for a window that is already frontmost. `window`
+    /// reports whether the window is still on screen; nil counts as live.
     func register(
         sceneID: UUID,
         router: AgentNotificationRouter,
+        window: (any AgentSceneWindow)? = nil,
         activate: @escaping @MainActor () -> Void
     ) {
         let activationOrder = entries[sceneID]?.activationOrder ?? 0
         entries[sceneID] = Entry(
-            router: router, activate: activate, activationOrder: activationOrder)
+            router: router, window: window, activate: activate,
+            activationOrder: activationOrder)
         if !order.contains(sceneID) {
             order.append(sceneID)
         }
@@ -177,7 +214,7 @@ final class AgentSceneDirectory {
 
     private func reconcileTerminalOwnership() {
         let claims = order.compactMap { id -> HostTerminalClaim? in
-            guard let entry = entries[id], let agent = entry.router.path.last,
+            guard let entry = liveEntry(id), let agent = entry.router.path.last,
                 entry.router.isKnownAgent(agent)
             else { return nil }
             return HostTerminalClaim(
@@ -196,9 +233,19 @@ final class AgentSceneDirectory {
         }
     }
 
+    /// A registered window that is still on screen. A closed window that
+    /// never delivered `onDisappear` must not swallow Open in New Window, a
+    /// deep link, or its Host's terminal channel.
+    private func liveEntry(_ sceneID: UUID) -> Entry? {
+        guard let entry = entries[sceneID],
+            entry.window?.sceneWindowState != .disconnected
+        else { return nil }
+        return entry
+    }
+
     var scenes: [AgentSceneState] {
         order.compactMap { id in
-            guard let entry = entries[id] else { return nil }
+            guard let entry = liveEntry(id) else { return nil }
             return AgentSceneState(
                 id: id,
                 presentedAgent: entry.router.path.last ?? entry.router.pendingTarget?.agentID,
