@@ -130,6 +130,7 @@ struct ShellTerminalView: View {
             // Keyboard avoidance is owned by `TerminalKeyboardInset`; UIKit's
             // keyboard safe area would resize Ghostty a second time.
             .ignoresSafeArea(.keyboard, edges: .bottom)
+            .terminalKeyboardInsetWindow(keyboardInset)
             .background(
                 terminal.themes.selection(for: colorScheme)
                     .surfaceBackground(for: colorScheme)

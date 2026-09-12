@@ -19,6 +19,17 @@ Entries reference the issue that motivated them.
   Agents, ⌘F searches, ⌘N starts an Agent, ⌘, opens Settings, ⌘⇧H opens Hosts,
   ⌘E switches Direct Input / Composer, ⌘Return sends the focused Composer draft,
   and ⌘W closes the Agent view.
+- On iPad, Heeler opens in more than one window and resizes freely under Stage
+  Manager. Long-press an Agent and choose Open in New Window, or drag its row
+  out; each window restores its own Agent after a relaunch. Windows on Agents
+  of different Hosts are all live at once. A Host has one live terminal, so
+  windows on the same Host hand it to the one you last touched or typed in,
+  or to a window you just opened; the others show Live in Another Window
+  with Take Over Here (not while that Host's Shell Terminal is open), and
+  returning to the app leaves it where it was. A notification for an Agent
+  already on screen brings that window forward instead of opening another,
+  and a live window resize sends the Host one terminal resize once the
+  window settles.
 
 ### Changed
 

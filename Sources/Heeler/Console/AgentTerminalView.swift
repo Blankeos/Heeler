@@ -238,16 +238,21 @@ struct AgentTerminalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The scene root's window, known before this screen first renders.
+    @Environment(\.sceneWindow) private var sceneWindow
+    /// This view's own window, for hosts without a scene root.
+    @State private var mountedWindow = WindowReference()
+    /// Nil outside a scene root, where this screen always holds its Host's
+    /// terminal channel.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     private var isDirectInput: Bool { inputMode.isDirect }
 
+    /// The status bar height of the window this terminal is in. Another
+    /// window's inset is wrong under Stage Manager, where windows sit at
+    /// different distances from the status bar.
     private var statusBarInset: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .safeAreaInsets.top ?? 0
+        (sceneWindow?.window ?? mountedWindow.window)?.safeAreaInsets.top ?? 0
     }
 
     init(
@@ -908,6 +913,16 @@ struct AgentTerminalView: View {
         // bar appearance. Its content stays hidden, while this inset keeps
         // terminal output below the system clock.
         .padding(.top, statusBarInset)
+        .background {
+            // Keyboard geometry and the status bar inset follow this view's
+            // own window, not whichever window of the app is key.
+            WindowReader { window in
+                keyboardInset.attach(to: window)
+                mountedWindow.attach(window)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .background(
             terminal.themes.selection(for: colorScheme)
                 .surfaceBackground(for: colorScheme))
@@ -1455,7 +1470,25 @@ struct AgentTerminalView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
+        if let away = LiveInAnotherWindowPresentation(
+            access: sceneRouting?.terminalAccess(for: agent.hostID) ?? .holds)
+        {
+            // Ahead of the terminal status: this window released its Attach
+            // on purpose, so its stopped terminal says nothing useful.
+            TerminalStatusDialog(
+                glyph: .symbol(away.systemImage),
+                title: away.title,
+                message: away.message,
+                palette: themePalette
+            ) {
+                if away.showsTakeOver {
+                    Button(LiveInAnotherWindowPresentation.takeOverTitle) {
+                        sceneRouting?.takeOverTerminal(for: agent.hostID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        } else if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
             switch presentation.kind {
             case .connecting:
                 // No dim: a reattach would otherwise flash the whole screen dark.

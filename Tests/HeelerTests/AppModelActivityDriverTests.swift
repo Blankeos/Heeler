@@ -1,21 +1,19 @@
-import SwiftUI
 import Testing
-import UIKit
 
 @testable import Heeler
 
-/// The wiring #167 pins: `ContentView`'s `.task` running
+/// The wiring #167 pins: `HeelerAppModel.start()` running
 /// `ConsoleActivityDriver` is the only path that turns an app suspension
 /// into a Console teardown (spec #20) and a foreground return into a
-/// re-probe (#142). Deleting those three lines used to leave the whole suite
-/// green, because no test could reach the stores `ContentView` builds inside
-/// itself. The injection seam on `ContentView.init` exists so this test can
-/// hand the real view a volatile Host catalog, a scripted Console, and a
-/// fast coordinator, host it, and watch the injected stores for the
-/// driver's effects.
+/// re-probe (#142). Deleting those lines used to leave the whole suite
+/// green, because no test could reach the stores the composition root builds
+/// inside itself. The injection seam on `HeelerAppModel.init` exists so this
+/// test can hand the real model a volatile Host catalog, a scripted Console,
+/// and a fast coordinator, start it the way every window does, and watch the
+/// injected stores for the driver's effects.
 @MainActor
-@Suite("ContentView activity driver")
-struct ContentViewActivityDriverTests {
+@Suite("App model activity driver")
+struct AppModelActivityDriverTests {
     /// Backgrounding past the grace period must suspend the Host's
     /// connection: the coordinator emits `.suspended`, and only the driver
     /// consuming it calls `console.suspend()`. Both halves of that
@@ -38,32 +36,29 @@ struct ContentViewActivityDriverTests {
         let activity = AppActivityCoordinator(
             gracePeriod: .milliseconds(100), granter: granter)
 
-        let controller = UIHostingController(
-            rootView: ContentView(
-                pushRegistration: PushRegistrationStore(
-                    client: ScriptedPushRegistrationClient(), environment: .sandbox),
-                notificationRouter: AgentNotificationRouter(),
-                hostStore: HostStore(volatileHosts: [host]),
-                console: console,
-                activity: activity))
-        // Bind the hosted view to the test app's connected scene so SwiftUI
-        // owns a valid lifecycle for the `.task` modifiers under test.
-        let window = try await makeTestWindow(
-            frame: CGRect(x: 0, y: 0, width: 402, height: 874),
-            rootViewController: controller)
-        defer { window.isHidden = true }
+        let app = HeelerAppModel(
+            pushRegistration: PushRegistrationStore(
+                client: ScriptedPushRegistrationClient(), environment: .sandbox),
+            sceneDirectory: AgentSceneDirectory(),
+            hostStore: HostStore(volatileHosts: [host]),
+            console: console,
+            activity: activity)
+        // A second window starting the app again must not start a second
+        // driver: the activity stream has exactly one consumer.
+        app.start()
+        app.start()
 
-        // The view's own first `.task` aligns the injected Console with the
-        // injected catalog and resumes it.
+        // Start aligns the injected Console with the injected catalog and
+        // resumes it.
         try await waitUntil("the injected Host should come up connected") {
             console.hostStatuses[host.id] == .connected
         }
 
-        activity.didEnterBackground()
+        app.scenePhaseDidChange(.background)
 
         // The grace period elapses and the coordinator emits `.suspended`.
-        // Only the driver's `.task` turns that into a Console teardown —
-        // deleting it leaves the Host `.connected` and this wait red.
+        // Only the driver turns that into a Console teardown — deleting it
+        // leaves the Host `.connected` and this wait red.
         try await waitUntil("the driver should suspend the Host's connection") {
             console.hostStatuses[host.id] == .suspended
         }
@@ -77,7 +72,45 @@ struct ContentViewActivityDriverTests {
         console.setHosts([])
     }
 
-    /// Polls until `condition` holds, yielding so the view's tasks progress.
+    /// The Host catalog feeds the Console through the model's own
+    /// observation, not through any window: a Host added after start, with
+    /// no view rendering, still reaches the Console.
+    @Test func hostsAddedAfterStartReachTheConsoleWithoutAWindow() async throws {
+        let first = Host.fixture()
+        let second = Host.fixture()
+        let console = ConsoleStore(snapshotRetryDelay: .milliseconds(10)) { _, subscriptions in
+            let transport = ScriptedTransport(snapshot: .fixture())
+            return EventsSession(
+                subscriptions: subscriptions,
+                connect: { transport },
+                reconnectPolicy: ReconnectPolicy(
+                    initialDelay: .milliseconds(10), multiplier: 2,
+                    maxDelay: .milliseconds(50)),
+                keepalive: .default)
+        }
+        let hostStore = HostStore(volatileHosts: [first])
+        let app = HeelerAppModel(
+            pushRegistration: PushRegistrationStore(
+                client: ScriptedPushRegistrationClient(), environment: .sandbox),
+            sceneDirectory: AgentSceneDirectory(),
+            hostStore: hostStore,
+            console: console,
+            activity: AppActivityCoordinator(
+                gracePeriod: .seconds(60), granter: RecordingBackgroundExecutionGranter()))
+        app.start()
+        try await waitUntil("the initial Host should connect") {
+            console.hostStatuses[first.id] == .connected
+        }
+
+        try hostStore.add(second)
+
+        try await waitUntil("the added Host should connect") {
+            console.hostStatuses[second.id] == .connected
+        }
+        console.setHosts([])
+    }
+
+    /// Polls until `condition` holds, yielding so the model's tasks progress.
     private func waitUntil(
         _ comment: Comment, timeout: Duration = .seconds(5),
         condition: () async -> Bool

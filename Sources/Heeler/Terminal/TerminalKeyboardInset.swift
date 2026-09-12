@@ -30,7 +30,12 @@ final class TerminalKeyboardInset {
     /// short enough to stay inside the keyboard's own animation.
     private static let coalesceDelay = Duration.milliseconds(60)
     @ObservationIgnored private var coalesceTask: Task<Void, Never>?
-    @ObservationIgnored private let measure: @MainActor (CGRect) -> CGFloat?
+    /// Nil in production, where the keyboard is measured against `window`.
+    @ObservationIgnored private let measureOverride: (@MainActor (CGRect) -> CGFloat?)?
+    /// The window this inset's terminal lives in. Keyboard notifications are
+    /// process-wide; with two windows on iPad only the terminal's own window
+    /// can say how much of it the keyboard covers.
+    @ObservationIgnored private weak var window: UIWindow?
     @ObservationIgnored private var capturesPresentedHeight = true
     /// Composer-to-terminal responder handoff can publish transient show,
     /// change-frame, and even hide notifications while the software keyboard
@@ -47,13 +52,13 @@ final class TerminalKeyboardInset {
 
     var isHoldingHandoffHeight: Bool { activeResponderHandoffID != nil }
 
+    /// `measure` replaces the window measurement in tests; production leaves
+    /// it nil and attaches the terminal's window instead.
     init(
         notificationCenter: NotificationCenter = .default,
-        measure: @escaping @MainActor (CGRect) -> CGFloat? = {
-            TerminalKeyboardInset.coveredHeight(of: $0)
-        }
+        measure: (@MainActor (CGRect) -> CGFloat?)? = nil
     ) {
-        self.measure = measure
+        measureOverride = measure
         for name: Notification.Name in [
             UIResponder.keyboardWillShowNotification,
             UIResponder.keyboardWillChangeFrameNotification,
@@ -76,6 +81,22 @@ final class TerminalKeyboardInset {
                 self?.keyboardWillDismiss()
             }
         }
+    }
+
+    /// Measures against the window the terminal is mounted in, which its view
+    /// reports through ``View/terminalKeyboardInsetWindow(_:)``. Idempotent;
+    /// the inset keeps the last window it was given.
+    func attach(to window: UIWindow) {
+        guard self.window !== window else { return }
+        self.window = window
+    }
+
+    private func measure(_ endFrame: CGRect) -> CGFloat? {
+        if let measureOverride {
+            return measureOverride(endFrame)
+        }
+        guard let window else { return nil }
+        return Self.coveredHeight(of: endFrame, in: window)
     }
 
     private func keyboardWillPresent(endFrame: CGRect?) {
@@ -216,24 +237,48 @@ final class TerminalKeyboardInset {
     /// stops at the home indicator. Subtracting that safe area is what keeps
     /// the last row against the toolbar instead of a strip of background.
     ///
-    /// Foreground-inactive scenes count too: UIKit restores the keyboard
-    /// during foregrounding, before the scene reaches `.foregroundActive`.
-    /// Requiring an active scene dropped exactly that measure, and the inset
-    /// stayed at zero under a visible keyboard — with the Agent strip buried
-    /// behind it.
-    static func coveredHeight(of endFrame: CGRect) -> CGFloat? {
-        let scenes = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-        guard
-            let window = scenes
-                .first(where: { $0.activationState == .foregroundActive })?.keyWindow
-                ?? scenes
-                .first(where: { $0.activationState == .foregroundInactive })?.keyWindow
+    /// The frame is measured against the terminal's own window, and only
+    /// while that window owns the keyboard (see `windowOwnsKeyboard`): the
+    /// notification is process-wide, and on iPad another window of the app
+    /// can be the one typing (#157).
+    static func coveredHeight(of endFrame: CGRect, in window: UIWindow) -> CGFloat? {
+        guard let scene = window.windowScene,
+            windowOwnsKeyboard(
+                isKeyWindow: window.isKeyWindow,
+                isSceneKeyWindow: scene.keyWindow === window,
+                activationState: scene.activationState)
         else { return nil }
         let frameInWindow = window.convert(endFrame, from: window.screen.coordinateSpace)
         return insetHeight(
             covered: window.bounds.intersection(frameInWindow).height,
             bottomSafeArea: window.safeAreaInsets.bottom)
+    }
+
+    /// Whether a keyboard notification can belong to this window. The key
+    /// window is the one receiving keyboard input, which is how the terminal
+    /// itself decides a frame is its own (#157).
+    ///
+    /// Foreground-inactive scenes count too: UIKit restores the keyboard
+    /// during foregrounding, before the scene reaches `.foregroundActive` and
+    /// before any window is key again, so there the scene's own key window
+    /// stands in. Requiring an active scene dropped exactly that measure, and
+    /// the inset stayed at zero under a visible keyboard — with the Agent
+    /// strip buried behind it.
+    nonisolated static func windowOwnsKeyboard(
+        isKeyWindow: Bool,
+        isSceneKeyWindow: Bool,
+        activationState: UIScene.ActivationState
+    ) -> Bool {
+        switch activationState {
+        case .foregroundActive:
+            isKeyWindow
+        case .foregroundInactive:
+            isKeyWindow || isSceneKeyWindow
+        case .background, .unattached:
+            false
+        @unknown default:
+            false
+        }
     }
 
     nonisolated static func insetHeight(covered: CGFloat, bottomSafeArea: CGFloat) -> CGFloat {
@@ -271,5 +316,15 @@ extension View {
     func terminalKeyboardInset(_ inset: TerminalKeyboardInset) -> some View {
         padding(.bottom, inset.height)
             .ignoresSafeArea(.keyboard)
+    }
+
+    /// Hands `inset` the window this view is mounted in, so it measures the
+    /// keyboard against that window rather than whichever one is key.
+    func terminalKeyboardInsetWindow(_ inset: TerminalKeyboardInset) -> some View {
+        background {
+            WindowReader { inset.attach(to: $0) }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
