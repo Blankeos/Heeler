@@ -631,6 +631,12 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// forwarded to the Host — long enough to coalesce one layout pass's
     /// several viewport reports into the final one.
     private static let gridSettleDelay: TimeInterval = 0.05
+    /// How long the window must keep one size before its grid is forwarded.
+    /// Longer than `gridSettleDelay`: a Stage Manager live resize pauses
+    /// between drag samples, and every intermediate grid the Host hears is a
+    /// full TUI redraw.
+    private static let windowResizeSettleDelay: TimeInterval = 0.15
+    private var windowResizeTracker = TerminalWindowResizeTracker()
     private var responderGate = TerminalKeyboardResponderGate()
     private var viewportSnapshotTask: Task<Void, Never>?
     private(set) var isLocalInputEnabled = true
@@ -1290,8 +1296,46 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
 
     override func layoutSubviews() {
         guard !defersLayoutForKeyboardTransition else { return }
+        // Before Ghostty's layout, so the freeze is in force by the time the
+        // pass reports its grid.
+        deferGridReportsForWindowResize()
         super.layoutSubviews()
         reloadInputViewsAfterWindowResize()
+    }
+
+    /// Stage Manager live resize, like rotation, changes the window's size on
+    /// consecutive frames, and Ghostty reports a PTY resize for every grid
+    /// that passes by. Those reports go through the same freeze the keyboard
+    /// handoff uses: held while the window keeps changing, then forwarded
+    /// once, as the grid the window settled on. A keyboard or split-view
+    /// column change leaves the window's size alone and reports as before.
+    private func deferGridReportsForWindowResize() {
+        guard let windowSize = window?.bounds.size,
+              windowResizeTracker.windowDidLayout(size: windowSize)
+        else { return }
+        // A freeze already holding (a keyboard settle still waiting to
+        // report, or this burst's previous frame) keeps its deferred grid;
+        // re-arming it would throw that grid away.
+        if callbackBridge.gridReportPhase != .deferring {
+            callbackBridge.beginSizeReportDeferral()
+        }
+        keyboardGridReportTask?.cancel()
+        let settleDelay = Self.windowResizeSettleDelay
+        keyboardGridReportTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(settleDelay))
+            guard !Task.isCancelled, let self else { return }
+            keyboardGridReportTask = nil
+            if hasTerminalGridMetrics {
+                // Ghostty reports a grid only when it changes, so a burst
+                // that returns to a grid it already passed through produces
+                // no final callback. The surface's synchronous metrics are
+                // the grid the window settled on either way.
+                callbackBridge.provideAuthoritativeDeferredSize(
+                    columns: terminalGridSize.columns,
+                    rows: terminalGridSize.rows)
+            }
+            callbackBridge.finishSizeReportDeferral()
+        }
     }
 
     override func didMoveToWindow() {
