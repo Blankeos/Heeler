@@ -394,6 +394,10 @@ final class ComposerStagingStore {
 
     private func finishSuccess(_ staged: StagedSource, operationID: UInt64) {
         guard operationID == self.operationID else { return }
+        if cancellationDisposition != nil {
+            finish(error: CancellationError(), medium: staged.medium, operationID: operationID)
+            return
+        }
         operationTask = nil
         cancellationDisposition = nil
         discardRetainedPreparedSource()
