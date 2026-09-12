@@ -319,6 +319,34 @@ struct TerminalScreenView: UIViewRepresentable {
     }
 }
 
+/// When a terminal re-asserts its Ghostty layer scale after a size change.
+///
+/// libghostty rebuilds the surface's IOSurface asynchronously. Until its
+/// renderer has, the layer's `contentsScale` is derived from the old surface's
+/// pixel height over the new point height, and libghostty corrects that drift
+/// only after a render it drives itself (`TerminalSurfaceCoordinator`'s
+/// `onPostRender`). A terminal with nothing to draw, such as an idle Agent
+/// behind a focused Composer with no cursor blink, renders no such frame, so a
+/// keyboard raise can leave its content drawn at old-height / new-height of
+/// its size in the top-left corner (2/3 on a 13-inch iPad in portrait). A
+/// later layout pass sets the scale directly and requests that render.
+struct TerminalSurfaceScaleSettle: Equatable, Sendable {
+    /// When the follow-up passes run after a size change, in seconds from
+    /// that change: once the renderer has had a few frames, and again for a
+    /// large surface that takes longer to rebuild.
+    static let followUpDelays: [TimeInterval] = [0.1, 0.5]
+    private var lastBoundsSize: CGSize?
+
+    /// Records one layout pass at `size`. True when the size changed since
+    /// the previous pass, including the first one with a real size. The
+    /// follow-up passes themselves keep the size, so they never reschedule.
+    mutating func boundsDidLayout(size: CGSize) -> Bool {
+        defer { lastBoundsSize = size }
+        guard size.width > 0, size.height > 0 else { return false }
+        return lastBoundsSize != size
+    }
+}
+
 /// A grid as the Host is told about it: the columns and rows a resize report
 /// carries, with the pixel metrics Ghostty measures them from left behind.
 struct TerminalGridSize: Equatable, Sendable, CustomStringConvertible {
@@ -701,6 +729,8 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// full TUI redraw.
     private static let windowResizeSettleDelay: TimeInterval = 0.15
     private var windowResizeTracker = TerminalWindowResizeTracker()
+    private var surfaceScaleSettle = TerminalSurfaceScaleSettle()
+    private var surfaceScaleSettleTask: Task<Void, Never>?
     /// A window resize froze grid reports and no thaw has forwarded its
     /// settled grid yet. A cancelled freeze must then report it itself.
     private var windowResizeGridIsPending = false
@@ -1387,6 +1417,26 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         deferGridReportsForWindowResize()
         super.layoutSubviews()
         reloadInputViewsAfterWindowResize()
+        settleSurfaceScaleAfterResize()
+    }
+
+    /// Lays out again after a size change so Ghostty's layer scale is set once
+    /// its renderer has rebuilt the surface; see ``TerminalSurfaceScaleSettle``.
+    /// The follow-up goes through `layoutSubviews`, so the keyboard and window
+    /// resize freezes still apply, and an unchanged grid reports nothing.
+    private func settleSurfaceScaleAfterResize() {
+        guard surfaceScaleSettle.boundsDidLayout(size: bounds.size) else { return }
+        surfaceScaleSettleTask?.cancel()
+        surfaceScaleSettleTask = Task { @MainActor [weak self] in
+            var elapsed: TimeInterval = 0
+            for delay in TerminalSurfaceScaleSettle.followUpDelays {
+                try? await Task.sleep(for: .seconds(delay - elapsed))
+                elapsed = delay
+                guard !Task.isCancelled, let self, self.window != nil else { return }
+                self.setNeedsLayout()
+                self.layoutIfNeeded()
+            }
+        }
     }
 
     /// Stage Manager live resize, like rotation, changes the window's size on
@@ -1431,6 +1481,8 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         if window == nil {
             stopTouchScrollMomentum()
             responderGate.invalidateTouches()
+            surfaceScaleSettleTask?.cancel()
+            surfaceScaleSettleTask = nil
         } else {
             inheritKeyboard()
         }

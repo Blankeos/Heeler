@@ -33,6 +33,38 @@ struct TerminalWindowResizeCoalescingTests {
         #expect(!unchanged)
     }
 
+    /// The first software-keyboard raise on a 13-inch iPad shrinks the terminal
+    /// from 1630 to 1100 points while its surface is still 3260 pixels tall:
+    /// Ghostty derives a 3x layer scale and an idle terminal never renders
+    /// the frame that corrects it. Every size change, the first raise
+    /// included, must schedule the follow-up passes, and those passes (which
+    /// keep the size) must not schedule more.
+    @Test func everyTerminalSizeChangeSchedulesOneScaleSettle() {
+        var settle = TerminalSurfaceScaleSettle()
+        let keyboardDown = CGSize(width: 1032, height: 1630)
+        let keyboardUp = CGSize(width: 1032, height: 1100)
+
+        #expect(!settle.boundsDidLayout(size: .zero))
+        #expect(settle.boundsDidLayout(size: keyboardDown))
+        #expect(!settle.boundsDidLayout(size: keyboardDown))
+        // First raise.
+        #expect(settle.boundsDidLayout(size: keyboardUp))
+        for _ in TerminalSurfaceScaleSettle.followUpDelays {
+            #expect(!settle.boundsDidLayout(size: keyboardUp))
+        }
+        // Dismissal, then the second raise.
+        #expect(settle.boundsDidLayout(size: keyboardDown))
+        #expect(settle.boundsDidLayout(size: keyboardUp))
+    }
+
+    @Test func scaleSettleFollowUpsRunInOrderAfterTheChange() {
+        let delays = TerminalSurfaceScaleSettle.followUpDelays
+        #expect(!delays.isEmpty)
+        #expect(delays.allSatisfy { $0 > 0 })
+        #expect(delays == delays.sorted())
+        #expect(Set(delays).count == delays.count)
+    }
+
     /// The choke point itself: N grid reports inside one freeze leave as one
     /// resize, the last one.
     @MainActor
