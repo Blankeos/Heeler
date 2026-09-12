@@ -16,6 +16,9 @@ struct TerminalFullKeyboard: View {
         GeometryReader { geometry in
             // Six rows share exactly the available page height, including in
             // landscape. No intrinsic key size may grow the surrounding dock.
+            // Width is capped and centered so a 13-inch iPad does not stretch
+            // one row across 1000 pt; see `InputChromeLayout.maxKeyboardContentWidth`.
+            let contentWidth = min(geometry.size.width, InputChromeLayout.maxKeyboardContentWidth)
             let rowHeight = max(0, (geometry.size.height - 12 - 5 * 4) / 6)
             VStack(spacing: 4) {
                 utilityRow
@@ -25,7 +28,7 @@ struct TerminalFullKeyboard: View {
                 characterRow(showsSymbols ? "-/\\:;()$&@" : "qwertyuiop")
                     .frame(height: rowHeight)
                 characterRow(showsSymbols ? "[]=+#%^*{}" : "asdfghjkl")
-                    .padding(.horizontal, showsSymbols ? 0 : geometry.size.width * 0.035)
+                    .padding(.horizontal, showsSymbols ? 0 : contentWidth * 0.035)
                     .frame(height: rowHeight)
                 HStack(spacing: 4) {
                     modifierKey(.shift, title: "Shift", image: "shift", label: "Shift modifier")
@@ -53,7 +56,7 @@ struct TerminalFullKeyboard: View {
                         isEnabled: isEnabled, isSelected: showsSymbols
                     ) { showsSymbols.toggle() }
                     characterKey(" ", title: "Space")
-                        .frame(width: max(0, geometry.size.width - 12) * 0.14)
+                        .frame(width: max(0, contentWidth - 12) * 0.14)
                     key(.left)
                     key(.down)
                     key(.up)
@@ -65,6 +68,7 @@ struct TerminalFullKeyboard: View {
             .padding(.horizontal, 6)
             .padding(.top, 4)
             .padding(.bottom, 8)
+            .frame(width: contentWidth, height: geometry.size.height)
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }

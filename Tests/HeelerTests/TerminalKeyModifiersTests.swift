@@ -234,6 +234,283 @@ struct TerminalKeyModifiersTests {
         }
     }
 
+    @Test func armedControlAppliesToInsertedCharacterAndClearsModifiers() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func physicalKeyMappingKeepsShiftedIdentityAndOmitsCommand() {
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardC,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                modifierFlags: [])
+                == ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []))
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardC,
+                characters: "C",
+                charactersIgnoringModifiers: "c",
+                modifierFlags: .shift)
+                == ArmedModifierPhysicalKey(key: .character("C"), physicalModifiers: .shift))
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardTab,
+                characters: "\t",
+                charactersIgnoringModifiers: "\t",
+                modifierFlags: .shift)
+                == ArmedModifierPhysicalKey(key: .tab, physicalModifiers: .shift))
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardLeftArrow,
+                characters: "",
+                charactersIgnoringModifiers: "",
+                modifierFlags: .control)
+                == ArmedModifierPhysicalKey(key: .left, physicalModifiers: .control))
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardC,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                modifierFlags: [.command, .shift]) == nil)
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardE,
+                characters: "é",
+                charactersIgnoringModifiers: "é",
+                modifierFlags: []) == nil)
+    }
+
+    @Test func armedAltPlusPhysicalControlLeftKeepsBothModifiers() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.send(.left, modifiers: [.control, .option])
+        let expected = try await fixture.drain()
+
+        fixture.control.toggleModifier(.option)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .left, physicalModifiers: .control),
+                token: token))
+        #expect(try await fixture.drain() == expected)
+        #expect(fixture.control.pendingModifiers.isEmpty)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+    }
+
+    @Test func armedControlPlusPhysicalShiftTabKeepsShift() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.send(.tab, modifiers: [.control, .shift])
+        let expected = try await fixture.drain()
+
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .tab, physicalModifiers: .shift),
+                token: token))
+        #expect(try await fixture.drain() == expected)
+        #expect(fixture.control.pendingModifiers.isEmpty)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+    }
+
+    @Test func armedControlPlusPhysicalPlainCSendsControlC() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: token))
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+    }
+
+    @Test func armedControlPlusPhysicalShiftCPreservesUppercaseIdentity() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.send(.character("C"), modifiers: [.control, .shift])
+        let expected = try await fixture.drain()
+
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("C"), physicalModifiers: .shift),
+                token: token))
+        #expect(try await fixture.drain() == expected)
+        #expect(fixture.control.pendingModifiers.isEmpty)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+    }
+
+    @Test func armedControlPlusUnsupportedCharacterIsNotConsumed() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            !fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("é"), physicalModifiers: []),
+                token: token))
+        #expect(fixture.control.pendingModifiers == .control)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.insertText("é")
+        #expect(try await fixture.drain() == Data("é".utf8))
+        #expect(fixture.control.pendingModifiers == .control)
+
+        fixture.control.sendQuickKey(.character("c"))
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func armedControlPlusInsertedUnsupportedCharacterReachesGhostty() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.toggleModifier(.control)
+        fixture.terminal.insertText("é")
+        #expect(try await fixture.drain() == Data("é".utf8))
+        #expect(fixture.control.pendingModifiers == .control)
+    }
+
+    @Test func consumedPressWithoutEchoThenReleaseDeliversSoftwareC() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: token))
+        #expect(try await fixture.drain() == Data([3]))
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+    }
+
+    @Test func consumedPressWithoutEchoThenCancelDeliversSoftwareC() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: token))
+        #expect(try await fixture.drain() == Data([3]))
+        fixture.terminal.cancelPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+    }
+
+    @Test func delayedInsertEchoIsDroppedThenLaterSoftwareCIsDelivered() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: token))
+        #expect(try await fixture.drain() == Data([3]))
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain().isEmpty)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+    }
+
+    @Test func repeatedPhysicalCAfterReleaseDeliversTheSecondCharacter() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        let first = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: first))
+        #expect(try await fixture.drain() == Data([3]))
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: first)
+
+        let second = ObjectIdentifier(NSObject())
+        #expect(
+            !fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("c"), physicalModifiers: []),
+                token: second))
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: second)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+    }
+
+    @Test func consumedBackspaceWithoutEchoThenReleaseDeliversSoftwareDelete() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .backspace, physicalModifiers: []),
+                token: token))
+        _ = try await fixture.drain()
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.deleteBackward()
+        #expect(try await fixture.drain() == Data([0x7F]))
+    }
+
+    @Test func insertTextWithoutArmedModifiersStaysUnmodified() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.isFirstResponder)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func sendInterruptIsControlOnlyAndClearsPrearmedModifiers() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+
+        fixture.control.toggleModifier(.option)
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+
+        fixture.control.toggleModifier(.shift)
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func sendInterruptClearsArmedModifiersWhenTheTerminalIsMissing() {
+        let control = TerminalKeyboardControl()
+        control.toggleModifier(.option)
+        control.sendInterrupt()
+        #expect(control.pendingModifiers.isEmpty)
+    }
+
     @Test func kittyProtocolReportsPressAndReleaseWithoutPasteFraming() async throws {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
@@ -276,7 +553,12 @@ struct TerminalKeyModifiersTests {
             fixture.window = try await makeTestWindow(
                 frame: CGRect(x: 0, y: 0, width: 402, height: 600),
                 rootViewController: controller)
+            fixture.window?.makeKeyAndVisible()
             controller.view.layoutIfNeeded()
+            // insertText reaches Ghostty only while first responder. The gate
+            // refuses a bare becomeFirstResponder() until the keyboard is asked
+            // for, matching AgentDirectInputTests / TerminalAttachTests.
+            fixture.terminal.requestKeyboard()
             // A terminal reply proves the surface exists and callbacks can reach
             // the host before the test starts sending keys.
             _ = try await fixture.drain()

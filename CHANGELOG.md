@@ -13,6 +13,12 @@ Entries reference the issue that motivated them.
   iPad, iPad supports all four interface orientations, and `make sim-ipad` /
   `make test-ipad` run against the iPad simulator.
 
+### Changed
+
+- Direct Input's shortcut strip drops keys a hardware keyboard already
+  provides, and the custom Terminal, Agent, and Skills keyboards fill iPad
+  width instead of an iPhone-sized well.
+
 ## [0.1.7] - 2026-09-12
 
 ### Added

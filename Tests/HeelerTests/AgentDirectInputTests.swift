@@ -1578,7 +1578,7 @@ struct AgentDirectInputTests {
         terminalSettings: TerminalSettings? = nil,
         isOnStage: @escaping () -> Bool = { true },
         onSwitch: @escaping (ConsoleAgent.ID) -> Void = { _ in }
-    ) -> AgentTerminalView {
+    ) -> some View {
         let defaults = UserDefaults(suiteName: "direct-detail-\(UUID())") ?? .standard
         let console = ConsoleStore(snapshotRetryDelay: .seconds(30)) { _, subscriptions in
             EventsSession(
@@ -1607,6 +1607,9 @@ struct AgentDirectInputTests {
             composer: composer,
             attachStore: attachStore,
             interactionProbe: interactionProbe)
+            .environment(
+                \.hardwareKeyboardMonitor,
+                HardwareKeyboardMonitor.stub(attached: false))
     }
 
     private static func makeAgent(status: AgentStatus) -> ConsoleAgent {
