@@ -693,7 +693,8 @@ struct AgentComposerStoreTests {
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
-        #expect(fixture.store.draft == "See \(AgentComposerStore.dropPlaceholder(number: 1))")
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
+        #expect(fixture.store.draft == "See \(token)")
 
         try await waitUntil(
             "the dropped image should follow the picker staging path",
@@ -719,7 +720,7 @@ struct AgentComposerStoreTests {
             .text("second"),
         ])
 
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         #expect(fixture.store.draft == "first \(token)second")
         #expect(fixture.store.messages.isEmpty)
 
@@ -750,10 +751,9 @@ struct AgentComposerStoreTests {
             .image(secondImage, suggestedName: "b.png"),
         ])
 
-        #expect(
-            fixture.store.draft
-                == AgentComposerStore.dropPlaceholder(number: 1)
-                + AgentComposerStore.dropPlaceholder(number: 2))
+        let tokens = fixture.store.pendingDropPlaceholders
+        #expect(tokens.count == 2)
+        #expect(fixture.store.draft == tokens[0] + tokens[1])
 
         try await waitUntil(
             "both dropped images should stage in order",
@@ -789,15 +789,15 @@ struct AgentComposerStoreTests {
         ) {
             fixture.staging.state.isBusy
         }
-        #expect(fixture.store.draft == AgentComposerStore.dropPlaceholder(number: 1))
+        let firstToken = try #require(fixture.store.pendingDropPlaceholders.first)
+        #expect(fixture.store.draft == firstToken)
 
         fixture.store.acceptDrop([
             .image(secondImage, suggestedName: "b.png")
         ])
-        #expect(
-            fixture.store.draft
-                == AgentComposerStore.dropPlaceholder(number: 1)
-                + AgentComposerStore.dropPlaceholder(number: 2))
+        let tokens = fixture.store.pendingDropPlaceholders
+        #expect(tokens.count == 2)
+        #expect(fixture.store.draft == tokens[0] + tokens[1])
         #expect(fixture.store.messages.isEmpty)
 
         await gate.open()
@@ -824,7 +824,7 @@ struct AgentComposerStoreTests {
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         try await waitUntil(
             "staging should hold the dropped image",
             timeout: .seconds(5)
@@ -863,7 +863,7 @@ struct AgentComposerStoreTests {
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         try await waitUntil(
             "staging should hold the dropped image",
             timeout: .seconds(5)
@@ -907,7 +907,7 @@ struct AgentComposerStoreTests {
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         try await waitUntil(
             "staging should hold the dropped image",
             timeout: .seconds(5)
@@ -943,7 +943,7 @@ struct AgentComposerStoreTests {
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         try await waitUntil(
             "staging should hold the dropped image",
             timeout: .seconds(5)
@@ -991,10 +991,9 @@ struct AgentComposerStoreTests {
         ) {
             fixture.staging.state.isBusy
         }
-        #expect(
-            fixture.store.draft
-                == AgentComposerStore.dropPlaceholder(number: 1)
-                + AgentComposerStore.dropPlaceholder(number: 2))
+        let tokens = fixture.store.pendingDropPlaceholders
+        #expect(tokens.count == 2)
+        #expect(fixture.store.draft == tokens[0] + tokens[1])
 
         fixture.staging.perform(.cancel)
         await gate.open()
@@ -1022,11 +1021,10 @@ struct AgentComposerStoreTests {
                 .path("/tmp/heeler-drop.jpg"),
             ])
         defer { fixture.cleanup() }
-        let token = AgentComposerStore.dropPlaceholder(number: 1)
-
         fixture.store.acceptDrop([
             .image(fixture.droppedImageData, suggestedName: "shot.png")
         ])
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
         try await waitUntil(
             "the dropped image should surface a retryable failure",
             timeout: .seconds(5)
@@ -1066,10 +1064,9 @@ struct AgentComposerStoreTests {
         ) {
             Self.isFailed(fixture.staging.state)
         }
-        #expect(
-            fixture.store.draft
-                == AgentComposerStore.dropPlaceholder(number: 1)
-                + AgentComposerStore.dropPlaceholder(number: 2))
+        let tokens = fixture.store.pendingDropPlaceholders
+        #expect(tokens.count == 2)
+        #expect(fixture.store.draft == tokens[0] + tokens[1])
 
         fixture.staging.perform(.dismiss)
         try await waitUntil(
@@ -1104,7 +1101,8 @@ struct AgentComposerStoreTests {
         ) {
             Self.isFailed(fixture.staging.state)
         }
-        #expect(fixture.store.draft == AgentComposerStore.dropPlaceholder(number: 2))
+        let remaining = try #require(fixture.store.pendingDropPlaceholders.first)
+        #expect(fixture.store.draft == remaining)
         #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
 
         fixture.staging.perform(.dismiss)
@@ -1140,7 +1138,7 @@ struct AgentComposerStoreTests {
         #expect(await fixture.preparer.loadedSelections().isEmpty)
     }
 
-    @Test func attachStoreBindsDroppedImagesOntoStagingBegin() {
+    @Test func attachStoreBindsDroppedImagesOntoStagingBegin() throws {
         let store = Self.draftOnlyStore()
         let attach = AgentAttachStore(
             target: "w1:p1",
@@ -1156,7 +1154,7 @@ struct AgentComposerStoreTests {
         store.acceptDrop([.image(Data([0x01]), suggestedName: "x.png")])
 
         #expect(attach.staging.state != .idle)
-        #expect(store.draft == AgentComposerStore.dropPlaceholder(number: 1))
+        #expect(store.draft == try #require(store.pendingDropPlaceholders.first))
         #expect(store.messages.isEmpty)
     }
 
@@ -1180,6 +1178,299 @@ struct AgentComposerStoreTests {
         #expect(!ComposerDropPolicy.acceptsDrops(in: .direct))
     }
 
+    @Test func dropPlaceholderIsUnforgeableAgainstUserImageLabels() throws {
+        let uuid = try #require(UUID(uuidString: "AABBCCDD-0000-0000-0000-000000000000"))
+        let token = AgentComposerStore.makeDropPlaceholder(uuid: uuid)
+        #expect(token == "\u{E000}img:aabbccdd\u{E001}")
+        #expect(!AgentComposerStore.containsDropPlaceholder("⟨image 1⟩ quote "))
+        #expect(AgentComposerStore.containsDropPlaceholder(token))
+    }
+
+    @Test func sendIsIgnoredWhileADroppedImageIsUploading() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(stageGate: gate)
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "hello")
+        fixture.store.setDraftSelection(NSRange(location: 5, length: 0))
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        try await waitUntil(
+            "staging should hold the dropped image",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+
+        #expect(fixture.store.hasPendingDroppedImages)
+        #expect(!fixture.store.canSend)
+        #expect(fixture.store.sendAccessibilityHint == "Waiting for image…")
+        #expect(await fixture.store.send() == .ignored)
+        #expect(fixture.store.messages.isEmpty)
+        #expect(fixture.store.draft.contains("hello"))
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func sendIsIgnoredWhileADroppedImageIsQueued() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(
+            remotePaths: [
+                "/tmp/heeler-drop-a.jpg",
+                "/tmp/heeler-drop-b.jpg",
+            ],
+            stageGate: gate)
+        defer { fixture.cleanup() }
+        let secondImage = Data([0xFF, 0xD8, 0xFF, 0x02])
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "a.png")
+        ])
+        try await waitUntil(
+            "the first dropped image should occupy staging",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+        fixture.store.acceptDrop([
+            .image(secondImage, suggestedName: "b.png")
+        ])
+
+        #expect(fixture.store.pendingDropPlaceholders.count == 2)
+        #expect(!fixture.store.canSend)
+        #expect(fixture.store.sendAccessibilityHint == "Waiting for image…")
+        #expect(await fixture.store.send() == .ignored)
+        #expect(fixture.store.messages.isEmpty)
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func sendIsIgnoredAfterARetryableDropFailure() async throws {
+        let fixture = try Self.makeDropStagingFixture(
+            stageResults: [
+                .failure(.transferFailed),
+                .path("/tmp/heeler-drop.jpg"),
+            ])
+        defer { fixture.cleanup() }
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        try await waitUntil(
+            "the dropped image should surface a retryable failure",
+            timeout: .seconds(5)
+        ) {
+            Self.isFailed(fixture.staging.state)
+        }
+
+        #expect(fixture.store.hasPendingDroppedImages)
+        #expect(!fixture.store.canSend)
+        #expect(fixture.store.sendAccessibilityHint == "Waiting for image…")
+        #expect(await fixture.store.send() == .ignored)
+        #expect(fixture.store.messages.isEmpty)
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func blockedSendIsIgnoredWhileADroppedImageIsPending() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(
+            initialStatus: .blocked,
+            stageGate: gate)
+        defer { fixture.cleanup() }
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        fixture.store.bindAttachInput(input)
+        fixture.store.replaceDraft(with: "hello")
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        try await waitUntil(
+            "staging should hold the dropped image",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+
+        #expect(await fixture.store.send() == .ignored)
+        #expect(fixture.store.messages.isEmpty)
+        #expect(writes.isEmpty)
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func preexistingImageLabelIsNotTreatedAsADropPlaceholder() async throws {
+        let fixture = try Self.makeDropStagingFixture()
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "⟨image 1⟩ quote ")
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
+        #expect(fixture.store.draft == "⟨image 1⟩ quote \(token)")
+        #expect(token != "⟨image 1⟩")
+
+        try await waitUntil(
+            "only the drop token should become the Host path",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft == "⟨image 1⟩ quote /tmp/heeler-drop.jpg "
+        }
+
+        #expect(fixture.store.draft == "⟨image 1⟩ quote /tmp/heeler-drop.jpg ")
+    }
+
+    @Test func duplicatedPlaceholderReplacesTheFirstCopyAndDeletesTheRest() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(stageGate: gate)
+        defer { fixture.cleanup() }
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        let token = try #require(fixture.store.pendingDropPlaceholders.first)
+        try await waitUntil(
+            "staging should hold the dropped image",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+
+        fixture.store.applyEditorDraft(
+            "\(token) note \(token)",
+            selection: NSRange(location: 0, length: 0))
+
+        await gate.open()
+        try await waitUntil(
+            "the first copy becomes the path and later copies are removed",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft == "/tmp/heeler-drop.jpg  note "
+        }
+
+        #expect(fixture.store.draft == "/tmp/heeler-drop.jpg  note ")
+    }
+
+    @Test func attachLeaveClearsTheDropQueueWithoutStartingTheNextUpload() async throws {
+        let gate = ScriptedTransportCallGate()
+        let counter = LeaveStageCounter(gate: gate)
+        let jpeg = try Self.tinyJPEGData()
+        let store = Self.draftOnlyStore()
+        let attach = AgentAttachStore(
+            target: "w1:p1",
+            paneTitle: "pane",
+            transportGeneration: nil,
+            isOnStage: { true },
+            runTerminal: { _, _ in },
+            stageImage: { _, _ in try await counter.stage() },
+            stageFile: { _, _ in try StagedFile(path: "/tmp/heeler-drop.txt") },
+            composer: store,
+            closePane: {})
+
+        store.acceptDrop([
+            .image(jpeg, suggestedName: "a.jpg"),
+            .image(jpeg, suggestedName: "b.jpg"),
+        ])
+        try await waitUntil(
+            "the first dropped image should occupy staging",
+            timeout: .seconds(5)
+        ) {
+            attach.staging.state.isBusy
+        }
+        #expect(store.pendingDropPlaceholders.count == 2)
+
+        let leave = attach.leave()
+        await gate.open()
+        await leave.value
+
+        #expect(await counter.count < 2)
+        #expect(!store.hasPendingDroppedImages)
+        #expect(!AgentComposerStore.containsDropPlaceholder(store.draft))
+        #expect(attach.staging.state == .idle)
+        #expect(!store.draft.contains("/tmp/leave-"))
+        #expect(store.messages.isEmpty)
+    }
+
+    @Test func teardownAbandonStopsTheQueueBeforeStagingLeave() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(
+            remotePaths: [
+                "/tmp/heeler-drop-a.jpg",
+                "/tmp/heeler-drop-b.jpg",
+            ],
+            stageGate: gate)
+        defer { fixture.cleanup() }
+        let secondImage = Data([0xFF, 0xD8, 0xFF, 0x02])
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "a.png"),
+            .image(secondImage, suggestedName: "b.png"),
+        ])
+        try await waitUntil(
+            "the first dropped image should occupy staging",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+        #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
+
+        fixture.store.abandonDroppedImagesForTeardown()
+        let leave = Task { await fixture.staging.leave() }
+        await gate.open()
+        await leave.value
+
+        #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
+        #expect(!fixture.store.hasPendingDroppedImages)
+        #expect(!AgentComposerStore.containsDropPlaceholder(fixture.store.draft))
+        #expect(fixture.staging.state == .idle)
+        #expect(!fixture.store.draft.contains("/tmp/heeler-drop"))
+        #expect(fixture.store.messages.isEmpty)
+    }
+
+    @Test func pickerSelectionUnblocksTheQueueAfterAFailedDrop() async throws {
+        let fixture = try Self.makeDropStagingFixture(
+            stageResults: [
+                .failure(.transferFailed),
+                .path("/tmp/heeler-picker.jpg"),
+                .path("/tmp/heeler-drop-b.jpg"),
+            ])
+        defer { fixture.cleanup() }
+        let secondImage = Data([0xFF, 0xD8, 0xFF, 0x02])
+        let pickerData = Data([0xFF, 0xD8, 0xFF, 0x99])
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "a.png"),
+            .image(secondImage, suggestedName: "b.png"),
+        ])
+        try await waitUntil(
+            "the first dropped image should fail retryably",
+            timeout: .seconds(5)
+        ) {
+            Self.isFailed(fixture.staging.state)
+        }
+        #expect(fixture.store.pendingDropPlaceholders.count == 2)
+
+        let pickerID = fixture.staging.begin(
+            .photo(DataImageSelection(data: pickerData)))
+        #expect(pickerID != nil)
+        #expect(fixture.store.pendingDropPlaceholders.count == 1)
+
+        try await waitUntil(
+            "the picker path and queued drop should both land",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft.contains("/tmp/heeler-picker.jpg")
+                && fixture.store.draft.contains("/tmp/heeler-drop-b.jpg")
+        }
+
+        #expect(fixture.store.draft.contains("/tmp/heeler-picker.jpg"))
+        #expect(fixture.store.draft.contains("/tmp/heeler-drop-b.jpg"))
+        #expect(!fixture.store.hasPendingDroppedImages)
+        #expect(
+            await fixture.preparer.loadedSelections()
+                == [fixture.droppedImageData, pickerData, secondImage])
+    }
+
     private static func draftOnlyStore() -> AgentComposerStore {
         AgentComposerStore(target: "w1:p1") { _ in
             throw TransportError.timedOut
@@ -1194,7 +1485,17 @@ struct AgentComposerStoreTests {
         if case .failed = state { true } else { false }
     }
 
+    private static func tinyJPEGData() throws -> Data {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16))
+        let image = renderer.image { context in
+            UIColor.systemBlue.setFill()
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
+        }
+        return try #require(image.jpegData(compressionQuality: 0.8))
+    }
+
     private static func makeDropStagingFixture(
+        initialStatus: AgentStatus = .idle,
         remotePaths: [String] = ["/tmp/heeler-drop.jpg"],
         stageResults: [DropStageResult]? = nil,
         stageGate: ScriptedTransportCallGate? = nil
@@ -1207,7 +1508,8 @@ struct AgentComposerStoreTests {
         let droppedImageData = Data([0xFF, 0xD8, 0xFF, 0x01])
         let preparer = RecordingDropImagePreparer(directory: directory)
         let transport = ScriptedTransport()
-        let store = AgentComposerStore(target: "w1:p1") { params in
+        let store = AgentComposerStore(target: "w1:p1", initialStatus: initialStatus) {
+            params in
             try await transport.promptAgent(params)
         }
         let results = stageResults ?? remotePaths.map { DropStageResult.path($0) }
@@ -1336,6 +1638,21 @@ private actor UnusedDropFilePreparer: FilePreparing {
 @MainActor
 private struct SilentDropClipboard: AttachmentClipboard {
     func copy(_: String) throws {}
+}
+
+private actor LeaveStageCounter {
+    let gate: ScriptedTransportCallGate
+    private(set) var count = 0
+
+    init(gate: ScriptedTransportCallGate) {
+        self.gate = gate
+    }
+
+    func stage() async throws -> StagedImage {
+        await gate.waitUntilOpen()
+        count += 1
+        return try StagedImage(path: "/tmp/leave-\(count).jpg")
+    }
 }
 
 @MainActor

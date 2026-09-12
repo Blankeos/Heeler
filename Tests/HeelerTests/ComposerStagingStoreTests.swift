@@ -140,6 +140,44 @@ struct ComposerStagingStoreTests {
             ])
     }
 
+    @Test func beginReplacesAFailedOperationAndPublishesDismissed() async throws {
+        let retriedPath = remotePath(for: .image, stem: "picker")
+        let fixture = try await makeFixture(
+            .image,
+            stagePlans: [
+                .failure(.transferFailed),
+                .success(retriedPath),
+            ])
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let failedID = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("staging should fail") { fixture.store.state.isFailed }
+        #expect(events == [.failed(id: failedID, retryable: true)])
+
+        let nextID = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x02])))))
+        #expect(nextID != failedID)
+        #expect(
+            events == [
+                .failed(id: failedID, retryable: true),
+                .dismissed(id: failedID),
+            ])
+
+        try await waitUntil("the replacement should complete") {
+            fixture.store.state.isCompleted
+        }
+        #expect(fixture.composer.draft == "\(retriedPath) ")
+        #expect(
+            events == [
+                .failed(id: failedID, retryable: true),
+                .dismissed(id: failedID),
+                .completed(id: nextID, path: retriedPath),
+            ])
+    }
+
     @Test(arguments: StagingTestMedium.allCases)
     func transientFailureRetainsPreparationAndRetryCompletes(
         _ medium: StagingTestMedium

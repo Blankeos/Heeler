@@ -213,6 +213,12 @@ final class ComposerStagingStore {
     @discardableResult
     func begin(_ source: Source, insertPathIntoComposer: Bool = true) -> UInt64? {
         guard !state.isBusy, operationTask == nil else { return nil }
+        switch state {
+        case .failed, .backgroundInterrupted:
+            publish(.dismissed(id: operationID))
+        case .idle, .completed, .preparing, .uploading:
+            break
+        }
         discardRetainedPreparedSource()
         cancellationDisposition = nil
         insertsPathIntoComposer = insertPathIntoComposer

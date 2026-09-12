@@ -236,7 +236,10 @@ struct AgentComposerView: View {
                             }
 
                             Spacer(minLength: 0)
-                            AgentComposerSendButton(isEnabled: store.canSend) {
+                            AgentComposerSendButton(
+                                isEnabled: store.canSend,
+                                accessibilityHint: store.sendAccessibilityHint
+                            ) {
                                 Task { await deliverDraft { await store.send() } }
                             }
                         }
@@ -521,6 +524,7 @@ private struct AgentComposerSkillSuggestions: View {
 
 struct AgentComposerSendButton: View {
     let isEnabled: Bool
+    var accessibilityHint: String = "Delivers the complete draft to the Agent"
     let action: () -> Void
 
     var body: some View {
@@ -532,7 +536,7 @@ struct AgentComposerSendButton: View {
         .buttonStyle(AgentComposerSendButtonStyle())
         .disabled(!isEnabled)
         .accessibilityLabel("Send")
-        .accessibilityHint("Delivers the complete draft to the Agent")
+        .accessibilityHint(accessibilityHint)
     }
 }
 

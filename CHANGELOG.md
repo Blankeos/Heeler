@@ -9,7 +9,8 @@ Entries reference the issue that motivated them.
 
 ### Added
 
-- Drag text and images into the Composer on iPad.
+- Drag text and images into the Composer on iPad. Send stays disabled, with
+  a "Waiting for image…" hint, until dropped images finish staging.
 
 ## [0.1.7] - 2026-09-12
 

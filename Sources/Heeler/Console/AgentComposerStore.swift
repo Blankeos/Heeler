@@ -7,6 +7,11 @@ import Observation
 protocol ComposerDraftOperations: AnyObject {
     func replaceDraft(with text: String)
     func insertIntoDraft(_ text: String)
+    func abandonDroppedImagesForTeardown()
+}
+
+extension ComposerDraftOperations {
+    func abandonDroppedImagesForTeardown() {}
 }
 
 /// Owns Agent detail's local draft and delivery state. Draft edits do not
@@ -72,7 +77,9 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// Dropped images waiting for `ComposerStagingStore.begin(_:)`. Each item
     /// owns a unique placeholder already inserted in `draft`.
     @ObservationIgnored private var pendingDroppedImages: [PendingDroppedImage] = []
-    @ObservationIgnored private var nextDropPlaceholderNumber = 0
+    /// Set by ``abandonDroppedImagesForTeardown()`` so leave/cancel events
+    /// cannot start the next queued upload.
+    @ObservationIgnored private var isTearingDownDroppedImages = false
 
     private struct PendingDroppedImage {
         enum Status: Equatable {
@@ -112,7 +119,22 @@ final class AgentComposerStore: ComposerDraftOperations {
     }
 
     var canSend: Bool {
-        draft.contains(where: { !$0.isWhitespace })
+        !hasPendingDroppedImages && draft.contains(where: { !$0.isWhitespace })
+    }
+
+    var hasPendingDroppedImages: Bool {
+        !pendingDroppedImages.isEmpty
+    }
+
+    /// VoiceOver hint for the Send button. Pending drops disable Send.
+    var sendAccessibilityHint: String {
+        hasPendingDroppedImages
+            ? "Waiting for image…"
+            : "Delivers the complete draft to the Agent"
+    }
+
+    var pendingDropPlaceholders: [String] {
+        pendingDroppedImages.map(\.placeholder)
     }
 
     func replaceDraft(with text: String) {
@@ -150,6 +172,7 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// same call the photo picker uses. One operation at a time; extras queue.
     func bindStaging(_ staging: ComposerStagingStore) {
         self.staging = staging
+        isTearingDownDroppedImages = false
         staging.onOperationEvent = { [weak self] event in
             self?.handleDroppedImageStagingEvent(event)
         }
@@ -176,10 +199,42 @@ final class AgentComposerStore: ComposerDraftOperations {
         startNextDroppedImageIfNeeded()
     }
 
-    /// Visible token inserted for a queued drop. Ordinary text; the editor
-    /// does not treat it specially.
-    static func dropPlaceholder(number: Int) -> String {
-        "⟨image \(number)⟩"
+    /// Visible token inserted for a queued drop. Private-use scalars plus a
+    /// UUID fragment so ordinary user text cannot collide with it.
+    static func makeDropPlaceholder(uuid: UUID = UUID()) -> String {
+        let hex = String(
+            uuid.uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        ).lowercased()
+        return "\u{E000}img:\(hex)\u{E001}"
+    }
+
+    static func containsDropPlaceholder(_ text: String) -> Bool {
+        let prefix = "\u{E000}img:"
+        let suffix: Character = "\u{E001}"
+        var search = text.startIndex
+        while let start = text[search...].range(of: prefix) {
+            let hexStart = start.upperBound
+            guard let hexEnd = text.index(hexStart, offsetBy: 8, limitedBy: text.endIndex),
+                hexEnd < text.endIndex,
+                text[hexEnd] == suffix,
+                text[hexStart..<hexEnd].allSatisfy(\.isHexDigit)
+            else {
+                search = start.upperBound
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    /// Clears queued drops and their tokens before staging teardown. Later
+    /// cancel/dismiss events must not start another upload.
+    func abandonDroppedImagesForTeardown() {
+        isTearingDownDroppedImages = true
+        for item in pendingDroppedImages {
+            applyTokenReplacement(item.placeholder, firstReplacement: "")
+        }
+        pendingDroppedImages.removeAll()
     }
 
     /// Completes an inline Skill suggestion: swaps the typed trigger token at
@@ -217,7 +272,7 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     @discardableResult
     func send() async -> SendResult {
-        guard canSend else { return .ignored }
+        guard canSend, !containsPendingPlaceholderInDraft else { return .ignored }
         let message = Message(
             id: UUID(), text: draft,
             agentWasWorkingAtSend: agentStatus == .working,
@@ -283,6 +338,9 @@ final class AgentComposerStore: ComposerDraftOperations {
     private func deliver(_ id: Message.ID) async -> SendResult {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return .ignored }
         let text = messages[index].text
+        if Self.containsDropPlaceholder(text) {
+            return .ignored
+        }
         if agentStatus == .blocked {
             return deliverThroughAttach(id, text: text)
         }
@@ -312,6 +370,7 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// Those bytes already cross `TerminalInputController`'s writer, which
     /// indexes them; do not also `record(submitted:)` here.
     private func deliverThroughAttach(_ id: Message.ID, text: String) -> SendResult {
+        guard !Self.containsDropPlaceholder(text) else { return .ignored }
         guard TerminalTextSafety.containsOnlySafeScalars(text) else {
             return fail(id, message: Self.unsafeTextMessage)
         }
@@ -373,9 +432,13 @@ final class AgentComposerStore: ComposerDraftOperations {
     private static let unsafeTextMessage =
         "The message contains unsafe terminal control characters."
 
+    private var containsPendingPlaceholderInDraft: Bool {
+        pendingDroppedImages.contains { draft.contains($0.placeholder) }
+            || Self.containsDropPlaceholder(draft)
+    }
+
     private func reserveDroppedImage(_ data: Data) {
-        nextDropPlaceholderNumber += 1
-        let placeholder = Self.dropPlaceholder(number: nextDropPlaceholderNumber)
+        let placeholder = Self.makeDropPlaceholder()
         insertIntoDraft(placeholder)
         pendingDroppedImages.append(
             PendingDroppedImage(
@@ -385,6 +448,7 @@ final class AgentComposerStore: ComposerDraftOperations {
     }
 
     private func handleDroppedImageStagingEvent(_ event: ComposerStagingStore.OperationEvent) {
+        guard !isTearingDownDroppedImages else { return }
         switch event {
         case .completed(let id, let path):
             fulfillDroppedImage(id: id, path: path)
@@ -401,7 +465,7 @@ final class AgentComposerStore: ComposerDraftOperations {
         let placeholder = pendingDroppedImages[index].placeholder
         pendingDroppedImages.remove(at: index)
         let insertion = "\(path) "
-        if !replaceFirstOccurrence(of: placeholder, with: insertion) {
+        if !applyTokenReplacement(placeholder, firstReplacement: insertion) {
             insertIntoDraft(insertion)
         }
     }
@@ -410,7 +474,7 @@ final class AgentComposerStore: ComposerDraftOperations {
         guard let index = indexOfDroppedImage(id: id) else { return }
         let placeholder = pendingDroppedImages[index].placeholder
         pendingDroppedImages.remove(at: index)
-        _ = replaceFirstOccurrence(of: placeholder, with: "")
+        applyTokenReplacement(placeholder, firstReplacement: "")
     }
 
     private func failDroppedImage(id: UInt64, retryable: Bool) {
@@ -425,7 +489,7 @@ final class AgentComposerStore: ComposerDraftOperations {
     }
 
     private func startNextDroppedImageIfNeeded() {
-        guard let staging else { return }
+        guard let staging, !isTearingDownDroppedImages else { return }
         if pendingDroppedImages.contains(where: { $0.blocksQueue }) { return }
         switch staging.state {
         case .idle, .completed:
@@ -454,17 +518,26 @@ final class AgentComposerStore: ComposerDraftOperations {
         }
     }
 
+    /// Replaces the first exact token and deletes any later copies the user
+    /// duplicated. Returns false when the token is gone.
     @discardableResult
-    private func replaceFirstOccurrence(of token: String, with replacement: String) -> Bool {
+    private func applyTokenReplacement(_ token: String, firstReplacement: String) -> Bool {
         guard !token.isEmpty else { return false }
-        let range = (draft as NSString).range(of: token)
-        guard range.location != NSNotFound else { return false }
-        draft = (draft as NSString).replacingCharacters(in: range, with: replacement)
-        draftSelection = Self.selection(
-            afterReplacing: range,
-            with: (replacement as NSString).length,
-            current: draftSelection)
-        return true
+        var found = false
+        var isFirst = true
+        while true {
+            let range = (draft as NSString).range(of: token)
+            guard range.location != NSNotFound else { break }
+            let replacement = isFirst ? firstReplacement : ""
+            draft = (draft as NSString).replacingCharacters(in: range, with: replacement)
+            draftSelection = Self.selection(
+                afterReplacing: range,
+                with: (replacement as NSString).length,
+                current: draftSelection)
+            found = true
+            isFirst = false
+        }
+        return found
     }
 
     private static func selection(

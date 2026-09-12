@@ -80,6 +80,7 @@ final class AgentAttachStore {
     let input: TerminalInputController
     let staging: ComposerStagingStore
     let close: ClosePaneStore
+    private let composer: any ComposerDraftOperations
     private(set) var attachLinkOpenFailure: AttachLinkOpenFailure?
 
     private var transportGeneration: UInt64?
@@ -129,6 +130,7 @@ final class AgentAttachStore {
         self.runTerminal = runTerminal
         self.transportGeneration = transportGeneration
         self.input = input
+        self.composer = composer
         let linkIndex = AttachLinkIndex()
         self.linkIndex = linkIndex
         terminal = Self.makeTerminal(
@@ -639,6 +641,7 @@ final class AgentAttachStore {
         // behind it on "Connecting…". The retain is temporary and
         // self-breaking: the task releases the store when the teardown ends.
         return enqueueLifecycleTransition { [self] in
+            composer.abandonDroppedImagesForTeardown()
             await staging.leave()
             await terminal.stop()
             linkIndex.clear()
