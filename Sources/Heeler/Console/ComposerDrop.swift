@@ -20,6 +20,14 @@ enum ComposerDropItem: Equatable, Sendable {
     }
 }
 
+/// Drop is Composer-only. Direct Input and any future non-Composer mode
+/// keep the destination uninstalled.
+enum ComposerDropPolicy {
+    static func acceptsDrops(in mode: AgentInputMode) -> Bool {
+        mode == .composer
+    }
+}
+
 /// Targeted-state chrome for the Composer card. Matches the existing idle
 /// hairline; a drop hover uses the accent tint the tools keyboard already
 /// uses for the selected tab.

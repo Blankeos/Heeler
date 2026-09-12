@@ -267,7 +267,7 @@ struct AgentComposerView: View {
                         .stroke(composerCardStroke, lineWidth: dropHighlight.strokeWidth)
                 }
                 .composerDropDestination(
-                    isEnabled: inputMode == .composer,
+                    isEnabled: ComposerDropPolicy.acceptsDrops(in: inputMode),
                     isTargeted: $isDropTargeted,
                     accept: { store.acceptDrop($0) }
                 )

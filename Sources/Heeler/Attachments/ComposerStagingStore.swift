@@ -81,6 +81,15 @@ final class ComposerStagingStore {
         let commands: [Command]
     }
 
+    /// Terminal outcomes for one `begin` operation. Picker callers can ignore
+    /// this; Composer drop uses the id to fulfill a specific placeholder.
+    enum OperationEvent: Equatable, Sendable {
+        case completed(id: UInt64, path: String)
+        case cancelled(id: UInt64)
+        case failed(id: UInt64, retryable: Bool)
+        case dismissed(id: UInt64)
+    }
+
     private enum CancellationDisposition {
         case user
         case background
@@ -180,6 +189,10 @@ final class ComposerStagingStore {
     private var operationTask: Task<Void, Never>?
     private var operationID: UInt64 = 0
     private var cancellationDisposition: CancellationDisposition?
+    private var insertsPathIntoComposer = true
+    /// Optional per-operation terminal events. The picker path does not set this.
+    @ObservationIgnored
+    var onOperationEvent: (@MainActor (OperationEvent) -> Void)?
 
     init(
         imagePreparer: any ImagePreparing = ImagePreparer(),
@@ -195,10 +208,14 @@ final class ComposerStagingStore {
         self.composer = composer
     }
 
-    func begin(_ source: Source) {
-        guard !state.isBusy, operationTask == nil else { return }
+    /// Starts one attachment. Returns the operation id, or `nil` when busy.
+    /// Retry keeps that same id. The picker keeps the default path insertion.
+    @discardableResult
+    func begin(_ source: Source, insertPathIntoComposer: Bool = true) -> UInt64? {
+        guard !state.isBusy, operationTask == nil else { return nil }
         discardRetainedPreparedSource()
         cancellationDisposition = nil
+        insertsPathIntoComposer = insertPathIntoComposer
         operationID &+= 1
         let currentID = operationID
         state = .preparing(source.medium)
@@ -206,6 +223,7 @@ final class ComposerStagingStore {
             guard let self else { return }
             await self.runSelection(source, operationID: currentID)
         }
+        return currentID
     }
 
     func perform(_ command: Command) {
@@ -228,6 +246,8 @@ final class ComposerStagingStore {
     }
 
     func leave() async {
+        let abandonedID = operationID
+        let previous = state
         operationID &+= 1
         let task = operationTask
         operationTask = nil
@@ -236,6 +256,14 @@ final class ComposerStagingStore {
         await task?.value
         discardRetainedPreparedSource()
         state = .idle
+        switch previous {
+        case .preparing, .uploading:
+            publish(.cancelled(id: abandonedID))
+        case .failed, .backgroundInterrupted:
+            publish(.dismissed(id: abandonedID))
+        case .idle, .completed:
+            break
+        }
     }
 
     private func cancel() {
@@ -257,7 +285,7 @@ final class ComposerStagingStore {
         else { return }
 
         cancellationDisposition = nil
-        operationID &+= 1
+        // Keep the failed operation's id so Composer can match Retry.
         let currentID = operationID
         state = .uploading(
             preparedSource.medium,
@@ -283,8 +311,16 @@ final class ComposerStagingStore {
 
     private func dismiss() {
         guard !state.isBusy else { return }
+        let previous = state
+        let id = operationID
         discardRetainedPreparedSource()
         state = .idle
+        switch previous {
+        case .failed, .backgroundInterrupted:
+            publish(.dismissed(id: id))
+        case .idle, .preparing, .uploading, .completed:
+            break
+        }
     }
 
     private func runSelection(_ source: Source, operationID: UInt64) async {
@@ -361,9 +397,12 @@ final class ComposerStagingStore {
             try clipboard.copy(staged.path)
             copied = true
         } catch {}
-        composer.insertIntoDraft("\(staged.path) ")
+        if insertsPathIntoComposer {
+            composer.insertIntoDraft("\(staged.path) ")
+        }
         state = .completed(
             Outcome(medium: staged.medium, path: staged.path, copied: copied))
+        publish(.completed(id: operationID, path: staged.path))
     }
 
     private func finish(error: any Error, medium: Medium, operationID: UInt64) {
@@ -373,15 +412,17 @@ final class ComposerStagingStore {
         if Self.isCancellation(error) || cancellationDisposition != nil {
             switch cancellationDisposition {
             case .background:
-                state = .backgroundInterrupted(
-                    Failure(
-                        medium: medium,
-                        message:
-                            "\(medium.displayName) upload paused when Heeler moved to the background.",
-                        isRetryable: preparedSource != nil))
+                let failure = Failure(
+                    medium: medium,
+                    message:
+                        "\(medium.displayName) upload paused when Heeler moved to the background.",
+                    isRetryable: preparedSource != nil)
+                state = .backgroundInterrupted(failure)
+                publish(.failed(id: operationID, retryable: failure.isRetryable))
             case .user, .none:
                 discardRetainedPreparedSource()
                 state = .idle
+                publish(.cancelled(id: operationID))
             }
             cancellationDisposition = nil
             return
@@ -392,6 +433,11 @@ final class ComposerStagingStore {
             discardRetainedPreparedSource()
         }
         state = .failed(failure)
+        publish(.failed(id: operationID, retryable: failure.isRetryable))
+    }
+
+    private func publish(_ event: OperationEvent) {
+        onOperationEvent?(event)
     }
 
     private func discardRetainedPreparedSource() {
