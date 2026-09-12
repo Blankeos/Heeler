@@ -95,6 +95,8 @@ struct AgentComposerView: View {
     let keyboardHandoff: TerminalKeyboardHandoff
     let keyboardHeight: CGFloat
     let actions: AgentComposerActions
+    /// Anchors the Attach Links list to the link chip that opens it.
+    let attachLinksPopover: AttachLinksPopover
     /// The screen's one Skills store, shared with the tools keyboard and the
     /// explicit picker. Nil for kinds without a skills source catalog, which
     /// disables inline suggestions.
@@ -233,6 +235,7 @@ struct AgentComposerView: View {
                                 .frame(minHeight: 44)
                                 .accessibilityLabel("Attach Links")
                                 .accessibilityValue(links.accessibilityValue)
+                                .modifier(attachLinksPopover)
                             }
 
                             Spacer(minLength: 0)

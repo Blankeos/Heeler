@@ -235,7 +235,8 @@ struct AgentTerminalView: View {
     @State private var isRenamingWorkspace = false
     @State private var isShowingWorktree = false
     @State private var worktreeStore: WorktreeDetailStore?
-    @State private var isShowingAttachLinks = false
+    /// The control that opened Attach Links, which its popover anchors to.
+    @State private var attachLinksOrigin: AttachLinksOrigin?
     @State private var closeErrorMessage: String?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
@@ -449,7 +450,7 @@ struct AgentTerminalView: View {
             isPresenting: isSelectingPhoto || isSelectingFile || isConfirmingClose
                 || isStartingAgent || isManagingSnippets || isShowingSkillsPicker
                 || isRenamingAgent || viewingSkill != nil || isRenamingWorkspace
-                || isShowingWorktree || isShowingAttachLinks || closeErrorMessage != nil
+                || isShowingWorktree || attachLinksOrigin != nil || closeErrorMessage != nil
                 || attach.pendingPaste != nil || attach.pasteErrorMessage != nil
                 || attach.attachLinkOpenFailure != nil,
             isOnStage: { @MainActor in isCommandOnStage() },
@@ -469,14 +470,6 @@ struct AgentTerminalView: View {
         ) { result in
             guard case .success(let url) = result else { return }
             attach.staging.begin(.file(url))
-        }
-        .popover(isPresented: $isShowingAttachLinks) {
-            AttachLinksView(
-                links: attach.attachLinks,
-                open: { link in openAttachLink(link) },
-                copy: { link in UIPasteboard.general.string = link.target })
-            // Regular width keeps the popover; only compact size classes adapt.
-            .presentationCompactAdaptation(.sheet)
         }
         .sheet(isPresented: $isStartingAgent) {
             // StartAgentView brings its own NavigationStack.
@@ -820,7 +813,7 @@ struct AgentTerminalView: View {
             attachLinkCount: attach.attachLinks.count,
             addImage: { isSelectingPhoto = true },
             addFile: { isSelectingFile = true },
-            showAttachLinks: { isShowingAttachLinks = true },
+            showAttachLinks: { attachLinksOrigin = .composerChip },
             openTerminal: canOpenTerminal ? openTerminal : nil,
             isOpeningTerminal: isOpeningTerminal,
             startAgent: { isStartingAgent = true },
@@ -1033,6 +1026,7 @@ struct AgentTerminalView: View {
             keyboardHandoff: keyboardHandoff,
             keyboardHeight: composerKeyboardLayout.availableToolsHeight,
             actions: composerActions,
+            attachLinksPopover: attachLinksPopover(from: .composerChip),
             skills: skills,
             keyboardPresentation: $composerKeyboardPresentation,
             prepareKeyboardPresentation: prepareComposerKeyboardPresentation,
@@ -1045,6 +1039,17 @@ struct AgentTerminalView: View {
             },
             onFirstResponderRequest: composerFirstResponderRequest,
             onKeyboardHandoffSettled: composerKeyboardHandoffSettled)
+    }
+
+    /// Attached to the control itself: a popover on the whole detail anchors
+    /// to the detail's bounds and floats detached from the chip on iPad.
+    private func attachLinksPopover(from origin: AttachLinksOrigin) -> AttachLinksPopover {
+        AttachLinksPopover(
+            origin: origin,
+            presentedOrigin: $attachLinksOrigin,
+            links: attach.attachLinks,
+            open: { link in openAttachLink(link) },
+            copy: { link in UIPasteboard.general.string = link.target })
     }
 
     private var composerModeControl: TerminalAgentSwitcherModeControl {
@@ -1417,7 +1422,7 @@ struct AgentTerminalView: View {
            let links = AgentComposerLinkPresentation(count: attach.attachLinks.count)
         {
             Button {
-                isShowingAttachLinks = true
+                attachLinksOrigin = .floatingButton
             } label: {
                 Image(systemName: "link")
                     .font(.system(size: 15, weight: .semibold))
@@ -1430,6 +1435,7 @@ struct AgentTerminalView: View {
             .hoverEffect(.highlight)
             .accessibilityLabel("Attach Links")
             .accessibilityValue(links.accessibilityValue)
+            .modifier(attachLinksPopover(from: .floatingButton))
             .padding(.trailing, MessageJumpPlacement.trailingPadding)
             .padding(.bottom, 8)
         }
@@ -1615,6 +1621,43 @@ private struct AgentEdgeBackGesture: View {
                         dismiss()
                     })
             .accessibilityHidden(true)
+    }
+}
+
+/// The control an Attach Links popover belongs to. Only the control that
+/// opened the list presents it, so a mode switch that briefly shows both
+/// controls cannot present the list twice.
+enum AttachLinksOrigin: Equatable {
+    case composerChip
+    case floatingButton
+
+    func presents(_ presented: AttachLinksOrigin?) -> Bool {
+        presented == self
+    }
+
+    /// The presented origin after this control's popover reports dismissal.
+    func dismissing(_ presented: AttachLinksOrigin?) -> AttachLinksOrigin? {
+        presented == self ? nil : presented
+    }
+}
+
+struct AttachLinksPopover: ViewModifier {
+    let origin: AttachLinksOrigin
+    @Binding var presentedOrigin: AttachLinksOrigin?
+    let links: [AttachLink]
+    let open: (AttachLink) -> Void
+    let copy: (AttachLink) -> Void
+
+    func body(content: Content) -> some View {
+        content.popover(
+            isPresented: Binding(
+                get: { origin.presents(presentedOrigin) },
+                set: { if !$0 { presentedOrigin = origin.dismissing(presentedOrigin) } })
+        ) {
+            AttachLinksView(links: links, open: open, copy: copy)
+                // Regular width keeps the popover; only compact size classes adapt.
+                .presentationCompactAdaptation(.sheet)
+        }
     }
 }
 
