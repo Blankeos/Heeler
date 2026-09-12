@@ -2,7 +2,8 @@ import Foundation
 
 /// What one window's Agent detail may do with its Host's terminal channel.
 enum HostTerminalAccess: Equatable, Sendable {
-    /// This window holds the channel, or nothing else wants it.
+    /// This window holds the channel, nothing else wants it, or this window
+    /// does not claim that Host and so has nothing to hand over.
     case holds
     /// Another window of the app holds it. `canTakeOver` is false while that
     /// window shows a Shell Terminal, which has no rejoin path to hand over.
@@ -37,7 +38,10 @@ struct HostTerminalClaim: Equatable, Sendable {
 ///   window claims it, else to the first-connected window that does.
 /// - A holder showing a Shell Terminal is never handed away.
 ///
-/// Hosts claimed by one window only are unaffected: that window holds.
+/// Hosts claimed by one window only are unaffected: that window holds. A
+/// window that does not claim a Host (not on one of its Agents, or not yet
+/// reconciled onto one) reads `.holds` for it: Live in Another Window is
+/// only for a window that wants the channel.
 struct HostTerminalOwnership: Equatable, Sendable {
     private(set) var holders: [Host.ID: UUID] = [:]
     /// The key window and the Host it claimed at the previous reconcile; a
@@ -102,7 +106,8 @@ struct HostTerminalOwnership: Equatable, Sendable {
     func access(
         sceneID: UUID, hostID: Host.ID, claims: [HostTerminalClaim]
     ) -> HostTerminalAccess {
-        guard let holder = holders[hostID], holder != sceneID,
+        guard claims.contains(where: { $0.sceneID == sceneID && $0.hostID == hostID }),
+            let holder = holders[hostID], holder != sceneID,
             let holderClaim = claims.first(where: {
                 $0.sceneID == holder && $0.hostID == hostID
             })
