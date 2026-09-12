@@ -1154,7 +1154,8 @@ struct AgentComposerStoreTests {
         store.acceptDrop([.image(Data([0x01]), suggestedName: "x.png")])
 
         #expect(attach.staging.state != .idle)
-        #expect(store.draft == try #require(store.pendingDropPlaceholders.first))
+        let token = try #require(store.pendingDropPlaceholders.first)
+        #expect(store.draft == token)
         #expect(store.messages.isEmpty)
     }
 
