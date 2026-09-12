@@ -65,11 +65,10 @@ struct ConsoleView: View {
                 safeAreaInsets: geometry.safeAreaInsets)
             NavigationSplitView(columnVisibility: Binding(
                 get: { splitVisibility.visibility },
-                set: { splitVisibility.systemDidChangeVisibility($0) })
+                set: { splitVisibility.systemDidChangeVisibility($0, presentation: presentation) })
             ) {
                 content
                     .navigationTitle("Agents")
-                    .toolbar(removing: presentation.showsSidebarToggle ? .sidebarToggle : nil)
                     .searchable(text: $searchText, prompt: "Search Agents")
                     .navigationSplitViewColumnWidth(
                         min: presentation.sidebarWidth.minimum,
@@ -138,21 +137,9 @@ struct ConsoleView: View {
                     }
             } detail: {
                 detail
-                    .toolbar {
-                        if presentation.showsSidebarToggle {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button(splitVisibility.sidebarToggleTitle, systemImage: "sidebar.left") {
-                                    withAnimation(reduceMotion ? nil : .snappy) {
-                                        splitVisibility.toggleSidebar()
-                                    }
-                                }
-                                .hoverEffect(.highlight)
-                            }
-                        }
-                    }
             }
             // Keep structural identity stable across rotation and size-class changes.
-            .navigationSplitViewStyle(.balanced)
+            .navigationSplitViewStyle(.automatic)
             .onChange(of: presentation, initial: true) { _, presentation in
                 splitVisibility.update(from: presentation)
             }
@@ -302,9 +289,15 @@ struct ConsoleView: View {
             }
         } else {
             ConsoleEmptyDetailView(
-                presentation: ConsoleEmptyDetailPresentation(hasHosts: !hosts.hosts.isEmpty)
+                presentation: ConsoleEmptyDetailPresentation(
+                    hasHosts: !hosts.hosts.isEmpty,
+                    showsAgentsAction: splitVisibility.reportedSidebarVisibility != true)
             ) { action in
                 switch action {
+                case .showAgents:
+                    withAnimation(reduceMotion ? nil : .snappy) {
+                        splitVisibility.toggleSidebar()
+                    }
                 case .newAgent: isStartingAgent = true
                 case .hosts: presentHosts()
                 }
