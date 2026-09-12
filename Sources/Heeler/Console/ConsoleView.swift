@@ -291,12 +291,12 @@ struct ConsoleView: View {
             ConsoleEmptyDetailView(
                 presentation: ConsoleEmptyDetailPresentation(
                     hasHosts: !hosts.hosts.isEmpty,
-                    showsAgentsAction: splitVisibility.reportedSidebarVisibility != true)
+                    showsAgentsAction: splitVisibility.showsAgentsAction)
             ) { action in
                 switch action {
                 case .showAgents:
                     withAnimation(reduceMotion ? nil : .snappy) {
-                        splitVisibility.toggleSidebar()
+                        splitVisibility.showSidebar()
                     }
                 case .newAgent: isStartingAgent = true
                 case .hosts: presentHosts()

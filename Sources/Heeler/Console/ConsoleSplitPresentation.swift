@@ -10,7 +10,7 @@ struct ConsoleSplitPresentation: Equatable {
 
     let hasUsableSize: Bool
     let usesRegularColumns: Bool
-    let layoutSize: CGSize
+    let isLandscape: Bool
     let defaultVisibility: NavigationSplitViewVisibility
     let sidebarWidth: ColumnWidth
 
@@ -24,13 +24,13 @@ struct ConsoleSplitPresentation: Equatable {
         hasUsableSize = size.width > 0 && size.height > 0
             && width.isFinite && height.isFinite
         usesRegularColumns = horizontalSizeClass == .regular
-        layoutSize = CGSize(width: width, height: height)
+        isLandscape = hasUsableSize && width > height
         guard hasUsableSize, horizontalSizeClass == .regular else {
             defaultVisibility = .automatic
             sidebarWidth = ColumnWidth(minimum: 320, ideal: 380, maximum: nil)
             return
         }
-        if width > height {
+        if isLandscape {
             defaultVisibility = .all
             sidebarWidth = ColumnWidth(minimum: 320, ideal: 380, maximum: 440)
         } else {
@@ -40,26 +40,24 @@ struct ConsoleSplitPresentation: Equatable {
     }
 }
 
-/// Layout defaults follow the scene until a visibility change in a stable layout.
+/// Only user deviations from a layout default carry across policy changes.
 struct ConsoleSplitVisibilityState {
     private(set) var visibility: NavigationSplitViewVisibility = .automatic
     private(set) var userVisibility: NavigationSplitViewVisibility?
     private(set) var reportedSidebarVisibility: Bool?
     private var appliedPresentation: ConsoleSplitPresentation?
 
-    var sidebarToggleTitle: String {
-        switch reportedSidebarVisibility {
-        case .some(true): "Hide Sidebar"
-        case .some(false): "Show Sidebar"
-        case nil: "Toggle Sidebar"
-        }
+    /// A concrete report wins; an applied concrete request is the fallback when
+    /// SwiftUI does not echo programmatic visibility changes through the binding.
+    var isSidebarVisible: Bool? {
+        reportedSidebarVisibility ?? Self.sidebarVisibility(for: visibility)
     }
 
+    var showsAgentsAction: Bool { isSidebarVisible != true }
+
     mutating func update(from presentation: ConsoleSplitPresentation) {
-        guard presentation.hasUsableSize else { return }
-        if appliedPresentation != presentation {
-            reportedSidebarVisibility = nil
-        }
+        guard presentation.hasUsableSize, presentation != appliedPresentation else { return }
+        reportedSidebarVisibility = nil
         appliedPresentation = presentation
         visibility = userVisibility ?? presentation.defaultVisibility
     }
@@ -70,23 +68,29 @@ struct ConsoleSplitVisibilityState {
     ) {
         // A callback from a different layout must not pin the outgoing column state.
         guard presentation.hasUsableSize, presentation == appliedPresentation else { return }
-        switch newVisibility {
-        case .all, .doubleColumn: reportedSidebarVisibility = true
-        case .detailOnly: reportedSidebarVisibility = false
-        default: reportedSidebarVisibility = nil
-        }
+        reportedSidebarVisibility = Self.sidebarVisibility(for: newVisibility)
         let changed = visibility != newVisibility
         visibility = newVisibility
         // Automatic is a policy, not a report that the sidebar is visible.
         // Compact stack navigation also must not become a regular-width preference.
+        // A same-value acknowledgement in portrait must not erase a landscape hide.
         if changed, presentation.usesRegularColumns, reportedSidebarVisibility != nil {
-            userVisibility = newVisibility
+            userVisibility = newVisibility == presentation.defaultVisibility ? nil : newVisibility
         }
     }
 
-    mutating func toggleSidebar() {
-        let next: NavigationSplitViewVisibility = reportedSidebarVisibility == true ? .detailOnly : .all
-        userVisibility = next
-        visibility = next
+    mutating func showSidebar() {
+        guard showsAgentsAction else { return }
+        visibility = .all
+        reportedSidebarVisibility = nil
+        userVisibility = appliedPresentation?.defaultVisibility == .all ? nil : .all
+    }
+
+    private static func sidebarVisibility(for visibility: NavigationSplitViewVisibility) -> Bool? {
+        switch visibility {
+        case .all, .doubleColumn: true
+        case .detailOnly: false
+        default: nil
+        }
     }
 }

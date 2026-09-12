@@ -120,15 +120,27 @@ struct ConsoleSplitPresentationTests {
         #expect(state.userVisibility == nil)
     }
 
-    @Test func sameAspectResizeIsStillALayoutTransition() {
+    @Test func sameAspectResizePreservesPolicyAndVisibilityReport() {
         let resizedPortrait = ConsoleSplitPresentation(
             horizontalSizeClass: .regular, size: CGSize(width: 800, height: 1100))
+        #expect(resizedPortrait == portrait)
         var state = ConsoleSplitVisibilityState()
         state.update(from: portrait)
-        state.systemDidChangeVisibility(.all, presentation: resizedPortrait)
-        #expect(state.userVisibility == nil)
+        state.systemDidChangeVisibility(.all, presentation: portrait)
         state.update(from: resizedPortrait)
-        #expect(state.visibility == .detailOnly)
+        #expect(state.reportedSidebarVisibility == true)
+        #expect(!state.showsAgentsAction)
+        #expect(state.userVisibility == .all)
+        state.systemDidChangeVisibility(.detailOnly, presentation: resizedPortrait)
+        #expect(state.userVisibility == nil)
+    }
+
+    @Test func policyChangesAtAspectAndSizeClassBoundaries() {
+        let compactPortrait = ConsoleSplitPresentation(
+            horizontalSizeClass: .compact, size: CGSize(width: 834, height: 1194))
+        #expect(portrait != landscape)
+        #expect(portrait != compactPortrait)
+        #expect(portrait != ConsoleSplitPresentation(horizontalSizeClass: .regular, size: .zero))
     }
 
     @Test func compactWriteBackDoesNotReplaceRegularUserChoice() {
@@ -151,44 +163,113 @@ struct ConsoleSplitPresentationTests {
         #expect(state.reportedSidebarVisibility == true)
         state.update(from: portrait)
         #expect(state.reportedSidebarVisibility == nil)
-        #expect(state.sidebarToggleTitle == "Toggle Sidebar")
         #expect(state.visibility == .detailOnly)
     }
 
-    @Test func sidebarTitleUsesReportedVisibilityAndAutomaticIsUnknown() {
+    @Test func automaticReportDoesNotClaimVisibleOrRecordIntent() {
         var state = ConsoleSplitVisibilityState()
         state.update(from: portrait)
-        #expect(state.sidebarToggleTitle == "Toggle Sidebar")
-        state.systemDidChangeVisibility(.detailOnly, presentation: portrait)
-        #expect(state.sidebarToggleTitle == "Show Sidebar")
-        state.systemDidChangeVisibility(.all, presentation: portrait)
-        #expect(state.sidebarToggleTitle == "Hide Sidebar")
         state.systemDidChangeVisibility(.automatic, presentation: portrait)
         #expect(state.reportedSidebarVisibility == nil)
-        #expect(state.sidebarToggleTitle == "Toggle Sidebar")
-        #expect(state.userVisibility == .all)
+        #expect(state.isSidebarVisible == nil)
+        #expect(state.showsAgentsAction)
+        #expect(state.userVisibility == nil)
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(!state.showsAgentsAction)
     }
 
-    @Test func showAgentsToggleRevealsSidebarWhenHiddenOrUnknown() {
+    @Test(arguments: [false, true])
+    func portraitRevealThenDismissRestoresLandscapeDefault(useShowAgents: Bool) {
         var state = ConsoleSplitVisibilityState()
         state.update(from: portrait)
-        state.toggleSidebar()
-        #expect(state.visibility == .all)
-        state.systemDidChangeVisibility(.detailOnly, presentation: portrait)
-        state.toggleSidebar()
-        #expect(state.visibility == .all)
+        if useShowAgents {
+            state.showSidebar()
+        } else {
+            state.systemDidChangeVisibility(.all, presentation: portrait)
+        }
         #expect(state.userVisibility == .all)
+        state.systemDidChangeVisibility(.detailOnly, presentation: portrait)
+        #expect(state.userVisibility == nil)
         state.update(from: landscape)
         #expect(state.visibility == .all)
     }
 
-    @Test func toggleCanHideASystemReportedVisibleSidebar() {
+    @Test func landscapeHideSurvivesPortraitRoundTripAndAcknowledgement() {
         var state = ConsoleSplitVisibilityState()
         state.update(from: landscape)
-        state.systemDidChangeVisibility(.all, presentation: landscape)
-        state.toggleSidebar()
-        #expect(state.visibility == .detailOnly)
+        state.systemDidChangeVisibility(.detailOnly, presentation: landscape)
         #expect(state.userVisibility == .detailOnly)
+        state.update(from: portrait)
+        state.systemDidChangeVisibility(.detailOnly, presentation: portrait)
+        #expect(state.userVisibility == .detailOnly)
+        state.update(from: landscape)
+        #expect(state.visibility == .detailOnly)
+    }
+
+    @Test func showingAgainInLandscapeClearsPreference() {
+        var state = ConsoleSplitVisibilityState()
+        state.update(from: landscape)
+        state.systemDidChangeVisibility(.detailOnly, presentation: landscape)
+        state.update(from: portrait)
+        state.update(from: landscape)
+        state.systemDidChangeVisibility(.all, presentation: landscape)
+        #expect(state.userVisibility == nil)
+        state.update(from: portrait)
+        #expect(state.visibility == .detailOnly)
+    }
+
+    @Test func showAgentsClearsLandscapeHidePreference() {
+        var state = ConsoleSplitVisibilityState()
+        state.update(from: landscape)
+        state.systemDidChangeVisibility(.detailOnly, presentation: landscape)
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(state.userVisibility == nil)
+        state.update(from: portrait)
+        #expect(state.visibility == .detailOnly)
+    }
+
+    @Test(arguments: [false, true])
+    func visibleLandscapeHidesShowAgentsAndPressIsNoOp(withSystemEcho: Bool) {
+        var state = ConsoleSplitVisibilityState()
+        state.update(from: landscape)
+        if withSystemEcho {
+            state.systemDidChangeVisibility(.all, presentation: landscape)
+        }
+        #expect(!state.showsAgentsAction)
+        let empty = ConsoleEmptyDetailPresentation(hasHosts: true, showsAgentsAction: state.showsAgentsAction)
+        #expect(!empty.actions.contains(.showAgents))
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(state.userVisibility == nil)
+        state.update(from: portrait)
+        #expect(state.visibility == .detailOnly)
+    }
+
+    @Test func concreteVisibleReportHidesActionAndRepeatedShowPreservesChoice() {
+        var state = ConsoleSplitVisibilityState()
+        state.update(from: portrait)
+        state.systemDidChangeVisibility(.all, presentation: portrait)
+        #expect(!state.showsAgentsAction)
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(state.reportedSidebarVisibility == true)
+        #expect(state.userVisibility == .all)
+    }
+
+    @Test func showAgentsRevealsHiddenSidebarOnceWithoutNeedingEcho() {
+        var state = ConsoleSplitVisibilityState()
+        state.update(from: portrait)
+        #expect(state.showsAgentsAction)
+        state.systemDidChangeVisibility(.detailOnly, presentation: portrait)
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(state.userVisibility == .all)
+        #expect(!state.showsAgentsAction)
+        state.showSidebar()
+        #expect(state.visibility == .all)
+        #expect(state.userVisibility == .all)
     }
 
     @Test(arguments: [CGSize.zero, CGSize(width: 0, height: 834), CGSize(width: 1194, height: 0)])
