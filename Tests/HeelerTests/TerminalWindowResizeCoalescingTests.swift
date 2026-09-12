@@ -44,17 +44,25 @@ struct TerminalWindowResizeCoalescingTests {
         let keyboardDown = CGSize(width: 1032, height: 1630)
         let keyboardUp = CGSize(width: 1032, height: 1100)
 
-        #expect(!settle.boundsDidLayout(size: .zero))
-        #expect(settle.boundsDidLayout(size: keyboardDown))
-        #expect(!settle.boundsDidLayout(size: keyboardDown))
-        // First raise.
-        #expect(settle.boundsDidLayout(size: keyboardUp))
+        // `boundsDidLayout` is mutating, so each pass runs outside `#expect`.
+        let unsized = settle.boundsDidLayout(size: .zero)
+        let firstLayout = settle.boundsDidLayout(size: keyboardDown)
+        let repeatedLayout = settle.boundsDidLayout(size: keyboardDown)
+        let firstRaise = settle.boundsDidLayout(size: keyboardUp)
+        var followUps: [Bool] = []
         for _ in TerminalSurfaceScaleSettle.followUpDelays {
-            #expect(!settle.boundsDidLayout(size: keyboardUp))
+            followUps.append(settle.boundsDidLayout(size: keyboardUp))
         }
-        // Dismissal, then the second raise.
-        #expect(settle.boundsDidLayout(size: keyboardDown))
-        #expect(settle.boundsDidLayout(size: keyboardUp))
+        let dismissal = settle.boundsDidLayout(size: keyboardDown)
+        let secondRaise = settle.boundsDidLayout(size: keyboardUp)
+
+        #expect(!unsized)
+        #expect(firstLayout)
+        #expect(!repeatedLayout)
+        #expect(firstRaise)
+        #expect(followUps == Array(repeating: false, count: followUps.count))
+        #expect(dismissal)
+        #expect(secondRaise)
     }
 
     @Test func scaleSettleFollowUpsRunInOrderAfterTheChange() {
