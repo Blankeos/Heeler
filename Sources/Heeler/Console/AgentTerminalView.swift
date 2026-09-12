@@ -467,11 +467,17 @@ struct AgentTerminalView: View {
                     workspaceID: agent.agent.workspaceID,
                     cwd: agent.agent.cwd),
                 onStarted: { switchToAgent($0) })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         // Presenting this takes the keyboard down and dismissing brings it
         // back; see `allowsKeyboardActivation` in HeelerTerminalView.
         .sheet(isPresented: $isManagingSnippets) {
             SnippetsManagementView(store: terminal.snippets)
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         // Same keyboard choreography as the Snippets sheet above. The picker
         // shares the tools keyboard's SkillsPaneStore, so both surfaces load
@@ -484,6 +490,9 @@ struct AgentTerminalView: View {
                     readSkill: { [console, agent] skill in
                         try await console.readSkillFile(path: skill.path, on: agent.hostID)
                     })
+                .modifier(ConsoleSheetPresentationModifier(
+                    presentation: ConsoleSheetPresentation(
+                        horizontalSizeClass: horizontalSizeClass)))
             }
         }
         // Same keyboard choreography as the Snippets sheet above.
@@ -491,6 +500,9 @@ struct AgentTerminalView: View {
             SkillContentSheet(skill: skill) { [console, agent] in
                 try await console.readSkillFile(path: skill.path, on: agent.hostID)
             }
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isRenamingAgent) {
             RenameSheetView(
@@ -502,6 +514,9 @@ struct AgentTerminalView: View {
                     try await console.renameAgent(
                         agent.agent.paneID, name: name, on: agent.hostID)
                 })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isRenamingWorkspace) {
             RenameSheetView(
@@ -512,12 +527,18 @@ struct AgentTerminalView: View {
                     try await console.renameWorkspace(
                         agent.agent.workspaceID, label: label, on: agent.hostID)
                 })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isShowingWorktree) {
             if let worktreeStore {
                 WorktreeDetailView(store: worktreeStore) { _ in
                     isShowingWorktree = false
                 }
+                .modifier(ConsoleSheetPresentationModifier(
+                    presentation: ConsoleSheetPresentation(
+                        horizontalSizeClass: horizontalSizeClass)))
             }
         }
         .sheet(

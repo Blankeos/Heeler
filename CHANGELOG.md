@@ -10,7 +10,8 @@ Entries reference the issue that motivated them.
 ### Changed
 
 - iPad adapts its two-column Console to landscape and portrait, with form sheets
-  for Hosts, Settings, and New Agent, plus Attach Links popovers.
+  for Hosts, Settings, New Agent, Skills, Rename, Snippets, and Worktree, plus
+  Attach Links popovers.
 
 ## [0.1.7] - 2026-09-12
 

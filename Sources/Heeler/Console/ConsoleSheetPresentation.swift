@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// Resolve against the presenting Console, since a form may itself be compact.
+/// Resolve against the presenting view, since a form may itself be compact.
 enum ConsoleSheetPresentation: Equatable {
     case form
-    case largeSheet
+    case inheritedSheet
 
     init(horizontalSizeClass: UserInterfaceSizeClass?) {
-        self = horizontalSizeClass == .regular ? .form : .largeSheet
+        self = horizontalSizeClass == .regular ? .form : .inheritedSheet
     }
 }
 
@@ -18,9 +18,9 @@ struct ConsoleSheetPresentationModifier: ViewModifier {
         switch presentation {
         case .form:
             content.presentationSizing(.form)
-        case .largeSheet:
-            // These three destinations used the default large sheet at the base revision.
-            content.presentationDetents([.large])
+        case .inheritedSheet:
+            // Keep each destination's existing detents (including Rename's medium sheet).
+            content
         }
     }
 }

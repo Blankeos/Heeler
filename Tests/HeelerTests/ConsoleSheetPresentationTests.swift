@@ -9,11 +9,11 @@ struct ConsoleSheetPresentationTests {
         #expect(ConsoleSheetPresentation(horizontalSizeClass: .regular) == .form)
     }
 
-    @Test func compactWidthKeepsLargeSheet() {
-        #expect(ConsoleSheetPresentation(horizontalSizeClass: .compact) == .largeSheet)
+    @Test func compactWidthPreservesDestinationSizing() {
+        #expect(ConsoleSheetPresentation(horizontalSizeClass: .compact) == .inheritedSheet)
     }
 
-    @Test func unknownSizeClassKeepsLargeSheet() {
-        #expect(ConsoleSheetPresentation(horizontalSizeClass: nil) == .largeSheet)
+    @Test func unknownSizeClassPreservesDestinationSizing() {
+        #expect(ConsoleSheetPresentation(horizontalSizeClass: nil) == .inheritedSheet)
     }
 }
