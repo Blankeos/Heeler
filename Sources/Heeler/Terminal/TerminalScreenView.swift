@@ -96,13 +96,17 @@ final class TerminalKeyboardControl {
         setModifierArmed(modifier, armed: !isModifierArmed(modifier))
     }
 
+    @discardableResult
     func sendQuickKey(
         _ key: AgentQuickKey,
         combining physicalModifiers: TerminalKeyModifiers = []
-    ) {
+    ) -> Bool {
         let modifiers = pendingModifiers.union(physicalModifiers)
-        guard let terminal, terminal.sendQuickKey(key, modifiers: modifiers) else { return }
+        guard let terminal, terminal.sendQuickKey(key, modifiers: modifiers) else {
+            return false
+        }
         pendingModifiers = []
+        return true
     }
 
     /// Control-only interrupt (Ctrl-C). Pre-armed Alt/Shift are discarded so
@@ -1752,8 +1756,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     /// Applies a one-shot ⌃/⌥/⇧, unioned with modifiers the physical key
-    /// already held. Returns false when nothing is armed so Ghostty still
-    /// receives the event.
+    /// already held. Returns false when nothing is armed, or when encoding
+    /// the key fails, so Ghostty still receives the original event. A failed
+    /// send leaves the armed set in place for a later key the encoder can
+    /// represent.
     @discardableResult
     func applyArmedModifiers(
         to key: AgentQuickKey,
@@ -1762,8 +1768,7 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         guard let keyboardControl, !keyboardControl.pendingModifiers.isEmpty else {
             return false
         }
-        keyboardControl.sendQuickKey(key, combining: physicalModifiers)
-        return true
+        return keyboardControl.sendQuickKey(key, combining: physicalModifiers)
     }
 
     /// The only consume path `pressesBegan` uses. Tests drive the same seam
@@ -1801,7 +1806,9 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
 
     /// Maps a hardware `UIKey` to the press seam. ⌘ chords return nil so they
     /// are never intercepted. Printable identity prefers `characters` so
-    /// Shift+c stays `"C"`.
+    /// Shift+c stays `"C"`. Characters the Ghostty US-key encoder cannot
+    /// represent also return nil; `applyArmedModifiers` still refuses a
+    /// failed send so an unmapped or unencodable press is forwarded.
     static func physicalKey(
         keyCode: UIKeyboardHIDUsage,
         characters: String,
@@ -1912,7 +1919,8 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         case .keyboardF12: return .function(.f12)
         default:
             if let character = printableCharacter(characters)
-                ?? printableCharacter(charactersIgnoringModifiers)
+                ?? printableCharacter(charactersIgnoringModifiers),
+                TerminalKeyPress(typing: character) != nil
             {
                 return .character(character)
             }

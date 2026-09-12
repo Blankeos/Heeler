@@ -238,7 +238,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         fixture.terminal.insertText("c")
         #expect(try await fixture.drain() == Data([3]))
@@ -280,6 +280,12 @@ struct TerminalKeyModifiersTests {
                 characters: "c",
                 charactersIgnoringModifiers: "c",
                 modifierFlags: [.command, .shift]) == nil)
+        #expect(
+            HeelerTerminalView.physicalKey(
+                keyCode: .keyboardE,
+                characters: "é",
+                charactersIgnoringModifiers: "é",
+                modifierFlags: []) == nil)
     }
 
     @Test func armedAltPlusPhysicalControlLeftKeepsBothModifiers() async throws {
@@ -347,11 +353,40 @@ struct TerminalKeyModifiersTests {
         fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
     }
 
+    @Test func armedControlPlusUnsupportedCharacterIsNotConsumed() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.toggleModifier(.control)
+        let token = ObjectIdentifier(NSObject())
+        #expect(
+            !fixture.terminal.beginPhysicalKeyForArmedModifiers(
+                ArmedModifierPhysicalKey(key: .character("é"), physicalModifiers: []),
+                token: token))
+        #expect(fixture.control.pendingModifiers == .control)
+        fixture.terminal.endPhysicalKeyForArmedModifiers(token: token)
+        fixture.terminal.insertText("é")
+        #expect(try await fixture.drain() == Data("é".utf8))
+        #expect(fixture.control.pendingModifiers == .control)
+
+        fixture.control.sendQuickKey(.character("c"))
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func armedControlPlusInsertedUnsupportedCharacterReachesGhostty() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.toggleModifier(.control)
+        fixture.terminal.insertText("é")
+        #expect(try await fixture.drain() == Data("é".utf8))
+        #expect(fixture.control.pendingModifiers == .control)
+    }
+
     @Test func consumedPressWithoutEchoThenReleaseDeliversSoftwareC() async throws {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         let token = ObjectIdentifier(NSObject())
         #expect(
@@ -368,7 +403,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         let token = ObjectIdentifier(NSObject())
         #expect(
@@ -385,7 +420,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         let token = ObjectIdentifier(NSObject())
         #expect(
@@ -404,7 +439,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         let first = ObjectIdentifier(NSObject())
         #expect(
@@ -428,7 +463,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.control.toggleModifier(.control)
         let token = ObjectIdentifier(NSObject())
         #expect(
@@ -445,7 +480,7 @@ struct TerminalKeyModifiersTests {
         let fixture = try await Fixture.make()
         defer { fixture.close() }
         fixture.terminal.setLocalInputEnabled(true)
-        #expect(fixture.terminal.becomeFirstResponder())
+        #expect(fixture.terminal.isFirstResponder)
         fixture.terminal.insertText("c")
         #expect(try await fixture.drain() == Data("c".utf8))
         #expect(fixture.control.pendingModifiers.isEmpty)
@@ -518,7 +553,12 @@ struct TerminalKeyModifiersTests {
             fixture.window = try await makeTestWindow(
                 frame: CGRect(x: 0, y: 0, width: 402, height: 600),
                 rootViewController: controller)
+            fixture.window?.makeKeyAndVisible()
             controller.view.layoutIfNeeded()
+            // insertText reaches Ghostty only while first responder. The gate
+            // refuses a bare becomeFirstResponder() until the keyboard is asked
+            // for, matching AgentDirectInputTests / TerminalAttachTests.
+            fixture.terminal.requestKeyboard()
             // A terminal reply proves the surface exists and callbacks can reach
             // the host before the test starts sending keys.
             _ = try await fixture.drain()
