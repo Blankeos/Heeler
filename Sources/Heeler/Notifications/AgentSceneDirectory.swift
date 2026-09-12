@@ -4,12 +4,43 @@ import SwiftUI
 import UIKit
 
 /// What the deep-link policy needs to know about one connected window.
+///
+/// "Key window" throughout this file and `HostTerminalOwnership` means the
+/// window the user is working in: the one with the highest activation order,
+/// which a touch, click, or key press in a window advances (see
+/// `AgentSceneDirectory.sceneDidReceiveInteraction`). It is not UIKit's key
+/// window, which since iOS 15 is per scene, so every on-screen Heeler window
+/// is one.
 struct AgentSceneState: Equatable, Sendable {
     let id: UUID
     /// The Agent the window shows, or is waiting to show once its pane syncs.
     let presentedAgent: ConsoleAgent.ID?
-    /// Higher is more recent; zero for a window that has never been active.
+    /// Higher is more recently worked in; zero for a window that never was.
     let activationOrder: UInt64
+}
+
+/// Whether a window's scene turning active counts as the user moving to it.
+///
+/// Every Heeler window turns active together when the app returns to the
+/// foreground, in no defined order, so a scene-phase edge says nothing about
+/// which window the user is working in; letting it count would hand a
+/// Host's terminal to whichever window happened to report last. Interaction
+/// says that instead. The exception is a newly opened window — Open in New
+/// Window, a dragged row, a first launch — which the user just asked for and
+/// should land on live: its first activation counts, once. A window restored
+/// from its scene storage waits for the user's first touch like any other.
+struct SceneActivationTracker: Equatable, Sendable {
+    private var countsNextActivation: Bool
+
+    init(isRestored: Bool) {
+        countsNextActivation = !isRestored
+    }
+
+    /// True for the first activation of a newly opened window only.
+    mutating func sceneDidBecomeActive() -> Bool {
+        defer { countsNextActivation = false }
+        return countsNextActivation
+    }
 }
 
 /// Where one deep link lands.
@@ -170,14 +201,25 @@ final class AgentSceneDirectory {
         reconcileTerminalOwnership()
     }
 
-    /// Records that a window became the key one: the landing spot for links
-    /// no window is already showing, and the window that takes its Host's
-    /// terminal channel.
+    /// Records that the user is now working in this window: the landing spot
+    /// for links no window is already showing, and the window that takes its
+    /// Host's terminal channel. Fed by `sceneDidReceiveInteraction` and by a
+    /// newly opened window's first activation (`SceneActivationTracker`).
     func sceneDidBecomeActive(sceneID: UUID) {
         guard entries[sceneID] != nil else { return }
         activationClock &+= 1
         entries[sceneID]?.activationOrder = activationClock
         reconcileTerminalOwnership()
+    }
+
+    /// A touch, click, or key press reached this window. Only a move from
+    /// another window counts; interaction inside the window already worked in
+    /// returns at once, so this is cheap on every event.
+    func sceneDidReceiveInteraction(sceneID: UUID) {
+        guard let entry = liveEntry(sceneID),
+            activationClock == 0 || entry.activationOrder != activationClock
+        else { return }
+        sceneDidBecomeActive(sceneID: sceneID)
     }
 
     /// A window's navigation or its Agent list changed, so what it claims
@@ -201,7 +243,7 @@ final class AgentSceneDirectory {
     }
 
     /// Take Over Here: moves the Host's channel to this window now, instead
-    /// of at its next key edge.
+    /// of when the user next moves into it.
     func takeOverTerminal(sceneID: UUID, hostID: Host.ID) {
         reconcileTerminalOwnership()
         var ownership = terminalOwnership

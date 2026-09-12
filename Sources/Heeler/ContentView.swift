@@ -20,6 +20,8 @@ struct ContentView: View {
     /// A dragged row's Agent that reached this scene before it restored.
     @State private var incomingActivityRoute: AgentRoute?
     @State private var hasRestoredRoute = false
+    /// Replaced once restoration knows whether this window is new.
+    @State private var activation = SceneActivationTracker(isRestored: false)
     /// `AgentRoute.sceneStorageValue`; nil while the window shows the Console.
     @SceneStorage("dev.bybee.heeler.agentRoute") private var storedRoute: String?
     @Environment(\.scenePhase) private var scenePhase
@@ -59,11 +61,11 @@ struct ContentView: View {
             app.sceneDirectory.register(
                 sceneID: sceneID, router: notificationRouter, window: window,
                 activate: { activateWindow() })
-            window.observeBecomingKey { [directory = app.sceneDirectory, sceneID] in
-                directory.sceneDidBecomeActive(sceneID: sceneID)
+            window.observeInteraction { [directory = app.sceneDirectory, sceneID] in
+                directory.sceneDidReceiveInteraction(sceneID: sceneID)
             }
-            if scenePhase == .active, isKeyWindow {
-                app.sceneDirectory.sceneDidBecomeActive(sceneID: sceneID)
+            if scenePhase == .active {
+                sceneDidBecomeActive()
             }
             if let draggedRoute {
                 app.sceneDirectory.open(draggedRoute.target, preferredSceneID: sceneID)
@@ -73,12 +75,12 @@ struct ContentView: View {
         .onDisappear {
             app.sceneDirectory.unregister(sceneID: sceneID)
         }
-        // Every window turns active together when the app foregrounds; only
-        // the key one counts as activated. Moving between windows that stay
-        // active arrives through `observeBecomingKey` instead.
+        // A foreground return is not the user choosing this window; see
+        // `SceneActivationTracker`. Moving between windows arrives through
+        // `observeInteraction` instead.
         .onChange(of: scenePhase) {
-            if scenePhase == .active, isKeyWindow {
-                app.sceneDirectory.sceneDidBecomeActive(sceneID: sceneID)
+            if scenePhase == .active {
+                sceneDidBecomeActive()
             }
         }
         // Feeds the Console's Agent list to this window's router, so a
@@ -125,10 +127,11 @@ struct ContentView: View {
 
     private static let linkEventPrefix = "\(AgentActivityLink.scheme)://"
 
-    /// True before the window is known, so the first window of a launch still
-    /// counts as activated.
-    private var isKeyWindow: Bool {
-        window.window?.isKeyWindow ?? true
+    /// Counts only a newly opened window's first activation as the user
+    /// working in it.
+    private func sceneDidBecomeActive() {
+        guard activation.sceneDidBecomeActive() else { return }
+        app.sceneDirectory.sceneDidBecomeActive(sceneID: sceneID)
     }
 
     /// Applies the restoration precedence once, on the window's first
@@ -143,10 +146,12 @@ struct ContentView: View {
         hasRestoredRoute = true
         let incoming = incomingActivityRoute
         incomingActivityRoute = nil
-        guard
-            let restoration = SceneRouteRestoration.resolve(
-                sceneStorage: storedRoute, windowValue: windowRoute, userActivity: incoming)
-        else { return nil }
+        let restoration = SceneRouteRestoration.resolve(
+            sceneStorage: storedRoute, windowValue: windowRoute, userActivity: incoming)
+        // A window back from its own scene storage is one the system
+        // restored, not one the user just opened.
+        activation = SceneActivationTracker(isRestored: restoration?.source == .sceneStorage)
+        guard let restoration else { return nil }
         switch restoration.source {
         case .sceneStorage, .windowValue:
             notificationRouter.path = [restoration.route.agentID]

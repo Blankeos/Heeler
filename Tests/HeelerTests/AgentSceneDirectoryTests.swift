@@ -88,6 +88,41 @@ private final class FakeSceneWindow: AgentSceneWindow {
     var sceneWindowState = AgentSceneWindowState.connected
 }
 
+/// Which scene-phase activations count as the user moving into a window.
+@Suite("Scene activation tracker")
+struct SceneActivationTrackerTests {
+    /// Open in New Window, a dragged row, a first launch: the user just asked
+    /// for this window, so its first activation makes it the one worked in.
+    @Test func aNewlyOpenedWindowCountsItsFirstActivation() {
+        var tracker = SceneActivationTracker(isRestored: false)
+
+        let first = tracker.sceneDidBecomeActive()
+
+        #expect(first)
+    }
+
+    /// Every window turns active again on a foreground return, in no defined
+    /// order; none of that is the user choosing a window.
+    @Test func aForegroundReturnDoesNotCount() {
+        var tracker = SceneActivationTracker(isRestored: false)
+        _ = tracker.sceneDidBecomeActive()
+
+        let returned = tracker.sceneDidBecomeActive()
+        let returnedAgain = tracker.sceneDidBecomeActive()
+
+        #expect(!returned)
+        #expect(!returnedAgain)
+    }
+
+    @Test func aRestoredWindowWaitsForInteraction() {
+        var tracker = SceneActivationTracker(isRestored: true)
+
+        let first = tracker.sceneDidBecomeActive()
+
+        #expect(!first)
+    }
+}
+
 /// What a registered window's handle says about it.
 @Suite("Agent scene window state")
 struct AgentSceneWindowStateTests {
@@ -335,7 +370,7 @@ struct AgentSceneDirectoryTests {
     // MARK: Same-Host terminal handoff
 
     /// Two windows on two Agents of one Host, each registered and on its
-    /// Agent, the second window key.
+    /// Agent, the second the one worked in.
     private func makeSharedHostWindows(
         _ directory: AgentSceneDirectory
     ) -> (first: UUID, second: UUID) {
@@ -352,6 +387,80 @@ struct AgentSceneDirectoryTests {
         directory.sceneRouteDidChange(sceneID: second)
         directory.sceneDidBecomeActive(sceneID: second)
         return (first, second)
+    }
+
+    @Test func anInteractionInTheWaitingWindowHandsTheHostOver() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+
+        directory.sceneDidReceiveInteraction(sceneID: first)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: second, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+    }
+
+    /// Interaction in the window already worked in is not a move: it must
+    /// not undo a takeover made from the other window.
+    @Test func anInteractionInTheWindowAlreadyWorkedInChangesNothing() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+        directory.takeOverTerminal(sceneID: first, hostID: hostID)
+
+        directory.sceneDidReceiveInteraction(sceneID: second)
+        directory.sceneDidReceiveInteraction(sceneID: second)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
+    }
+
+    /// The scene root's rule, applied to two restored windows coming back to
+    /// the foreground in either order: the window the user was working in
+    /// keeps its Host.
+    @Test func aForegroundReturnDoesNotChangeTheHolder() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+        var firstActivation = SceneActivationTracker(isRestored: true)
+        var secondActivation = SceneActivationTracker(isRestored: true)
+        #expect(directory.terminalAccess(sceneID: second, hostID: hostID) == .holds)
+
+        for _ in 0..<2 {
+            if secondActivation.sceneDidBecomeActive() {
+                directory.sceneDidBecomeActive(sceneID: second)
+            }
+            if firstActivation.sceneDidBecomeActive() {
+                directory.sceneDidBecomeActive(sceneID: first)
+            }
+        }
+
+        #expect(directory.terminalAccess(sceneID: second, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+    }
+
+    /// Open in New Window onto another Agent of the same Host lands the user
+    /// on a live terminal, not on Live in Another Window.
+    @Test func aNewlyOpenedWindowTakesTheHost() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+        let opened = UUID()
+        let openedRouter = makeRouter(knowing: ["w1:p1", "w1:p2", "w1:p3"])
+        openedRouter.path = [target("w1:p3").agentID]
+        directory.register(sceneID: opened, router: openedRouter, activate: {})
+        var activation = SceneActivationTracker(isRestored: false)
+
+        if activation.sceneDidBecomeActive() {
+            directory.sceneDidBecomeActive(sceneID: opened)
+        }
+
+        #expect(directory.terminalAccess(sceneID: opened, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+        #expect(
+            directory.terminalAccess(sceneID: second, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
     }
 
     @Test func aSharedHostIsLiveOnlyInTheKeyWindow() {

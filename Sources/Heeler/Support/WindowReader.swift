@@ -69,34 +69,36 @@ final class WindowReference {
         guard storage !== window else { return }
         storage = window
         attachments &+= 1
+        installInteractionRecognizer()
     }
 
-    /// Calls `handler` each time this window becomes the key window. Under
-    /// Stage Manager several windows stay foreground-active at once, so the
-    /// scene phase does not change when the user moves between them; the key
-    /// window does. One handler per reference; a later call replaces it.
-    func observeBecomingKey(
-        notificationCenter: NotificationCenter = .default,
-        _ handler: @escaping @MainActor () -> Void
-    ) {
-        becameKeyHandler = handler
-        guard keyObserver == nil else { return }
-        keyObserver = notificationCenter.addObserver(
-            forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            // Notification is not Sendable; the window's identity is.
-            let windowID = (notification.object as? UIWindow).map(ObjectIdentifier.init)
-            MainActor.assumeIsolated {
-                guard let self, let windowID,
-                    self.storage.map(ObjectIdentifier.init) == windowID
-                else { return }
-                self.becameKeyHandler?()
-            }
+    /// Calls `handler` whenever the user touches, clicks, or types in this
+    /// window, through a passive ``WindowInteractionRecognizer`` installed on
+    /// it — now if the window is attached, otherwise once it attaches. One
+    /// handler per reference; a later call replaces it.
+    func observeInteraction(_ handler: @escaping @MainActor () -> Void) {
+        interactionHandler = handler
+        installInteractionRecognizer()
+    }
+
+    @ObservationIgnored private var interactionHandler: (@MainActor () -> Void)?
+    @ObservationIgnored private var interactionRecognizer: WindowInteractionRecognizer?
+
+    /// Keeps exactly one recognizer, on the attached window. It reaches the
+    /// handler through this reference weakly, so the window never retains
+    /// what the handler captures beyond this reference's own lifetime.
+    private func installInteractionRecognizer() {
+        guard interactionHandler != nil, let window = storage else { return }
+        if let interactionRecognizer, interactionRecognizer.view === window { return }
+        if let interactionRecognizer {
+            interactionRecognizer.view?.removeGestureRecognizer(interactionRecognizer)
         }
+        let recognizer = WindowInteractionRecognizer { [weak self] in
+            self?.interactionHandler?()
+        }
+        window.addGestureRecognizer(recognizer)
+        interactionRecognizer = recognizer
     }
-
-    @ObservationIgnored private var becameKeyHandler: (@MainActor () -> Void)?
-    @ObservationIgnored private var keyObserver: (any NSObjectProtocol)?
 }
 
 extension WindowReference: AgentSceneWindow {

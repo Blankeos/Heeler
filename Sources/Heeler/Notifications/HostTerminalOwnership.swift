@@ -23,14 +23,16 @@ struct HostTerminalClaim: Equatable, Sendable {
 /// 0015), as a pure decision over the windows' claims.
 ///
 /// A Host keeps one terminal channel however many windows show its Agents,
-/// so with two windows on one Host only one can be live. The rule:
+/// so with two windows on one Host only one can be live. "Key window" here
+/// is the window the user is working in (see `AgentSceneState`), not UIKit's
+/// per-scene key window. The rule:
 ///
-/// - A window that becomes key, or a key window that turns to a Host, takes
-///   that Host's channel: the window the user is working in is the live one.
+/// - The user moving into a window, or the window they work in turning to a
+///   Host, takes that Host's channel: the window being worked in is live.
 /// - Otherwise the holder keeps it, so a background window navigating never
-///   pulls the channel out from under the key window.
-/// - An explicit takeover moves it at once and holds until the next such key
-///   edge.
+///   pulls the channel out from under the window being worked in.
+/// - An explicit takeover moves it at once and holds until the user next
+///   moves into another window.
 /// - A Host whose holder stops claiming it passes to the key window if that
 ///   window claims it, else to the first-connected window that does.
 /// - A holder showing a Shell Terminal is never handed away.
@@ -46,8 +48,8 @@ struct HostTerminalOwnership: Equatable, Sendable {
     init() {}
 
     /// Re-derives every Host's holder. `claims` is in window connection
-    /// order, at most one per window; `keySceneID` is the most recently
-    /// activated window, claiming or not.
+    /// order, at most one per window; `keySceneID` is the window most
+    /// recently worked in, claiming or not.
     mutating func reconcile(claims: [HostTerminalClaim], keySceneID: UUID?) {
         let keyClaim = claims.first { $0.sceneID == keySceneID }
         let isKeyEdge =
