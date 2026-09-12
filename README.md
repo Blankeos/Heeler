@@ -97,7 +97,7 @@ you enable them for the Host in the app.
 
 ## Stack
 
-- SwiftUI, iOS 18+, iPhone today (iPad planned)
+- SwiftUI, iOS 18+, iPhone and iPad. iPad support is restored in 0.1.8 with Magic Keyboard shortcuts, multiwindow, and drag and drop.
 - The repository-local `Packages/HeelerSSH` (libssh2 + OpenSSL) for SSH
 - [libghostty-spm](https://github.com/lakr233/libghostty-spm) for terminal emulation and Metal rendering
 

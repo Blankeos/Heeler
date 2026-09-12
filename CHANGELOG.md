@@ -7,6 +7,12 @@ Entries reference the issue that motivated them.
 
 ## [Unreleased]
 
+### Added
+
+- iPad is a first-class target again. App Store builds include iPhone and
+  iPad, iPad supports all four interface orientations, and `make sim-ipad` /
+  `make test-ipad` run against the iPad simulator.
+
 ## [0.1.7] - 2026-09-12
 
 ### Added

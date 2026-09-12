@@ -89,7 +89,7 @@ host key 指纹和 SSH 密钥注册全部由配对码承载。在应用里为该
 
 ## 技术栈
 
-- SwiftUI，iOS 18+，当前仅 iPhone（iPad 在计划中）
+- SwiftUI，iOS 18+，iPhone 与 iPad。0.1.8 恢复 iPad 支持，含 Magic Keyboard 快捷键、多窗口和拖放。
 - 仓库内 `Packages/HeelerSSH`（libssh2 + OpenSSL）负责 SSH
 - [libghostty-spm](https://github.com/lakr233/libghostty-spm) 负责终端仿真与 Metal 渲染
 
