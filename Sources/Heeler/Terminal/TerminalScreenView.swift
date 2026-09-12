@@ -596,6 +596,17 @@ private final class TerminalInputTextRange: UITextRange {
     }
 }
 
+/// Where ``HeelerTerminalView`` sends one hardware key press.
+enum HardwarePressRoute: Equatable {
+    /// ⌘+ / ⌘−: the view steps the terminal zoom and swallows the press.
+    case zoom(Float)
+    /// Any other ⌘ chord: past Ghostty, up the responder chain to the scene's
+    /// key commands.
+    case sceneCommand
+    /// Everything else: Ghostty, as before.
+    case terminal
+}
+
 /// Identity of a physical key plus the modifiers that were actually held.
 /// `pressesBegan` maps `UIPress` to this and calls
 /// ``HeelerTerminalView/beginPhysicalKeyForArmedModifiers(_:token:)`` — the
@@ -714,6 +725,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// Presses whose began event was rewritten through armed modifiers, so
     /// Ghostty must not also see their ended/cancelled counterparts.
     private var pressesConsumedByArmedModifiers: Set<ObjectIdentifier> = []
+    /// ⌘ presses sent past Ghostty to the scene's key commands. Their
+    /// releases follow the same path, so Ghostty never sees a release for a
+    /// press it never received.
+    private var pressesRoutedToSceneCommands: Set<ObjectIdentifier> = []
     /// Echo de-dup for the originating consumed press only. Cleared on that
     /// press's ended/cancelled, or on any non-matching insert/delete.
     private var echoSuppression: ArmedModifierEchoSuppression?
@@ -1777,13 +1792,24 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// ⌘+ / ⌘- would otherwise reach Ghostty's own font-size keybinds, which
     /// leaves the global setting stale. Handle them here and swallow both the
     /// press and its release so Ghostty never sees the shortcut.
+    ///
+    /// Every other ⌘ chord goes up the responder chain instead of to Ghostty,
+    /// whose `pressesBegan` never calls super: a text-input first responder
+    /// gets key presses before the scene's key commands, so a swallowed chord
+    /// would leave every app shortcut dead while the terminal is focused.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         let incoming = Set(presses.map(ObjectIdentifier.init))
         if let token = echoSuppression?.pressToken, !incoming.contains(token) {
             echoSuppression = nil
         }
         var forwarded: Set<UIPress> = []
+        var sceneCommands: Set<UIPress> = []
         for press in presses {
+            if press.key.map({ Self.hardwarePressRoute(for: $0) }) == .sceneCommand {
+                pressesRoutedToSceneCommands.insert(ObjectIdentifier(press))
+                sceneCommands.insert(press)
+                continue
+            }
             guard let step = Self.zoomShortcutStep(for: press) else {
                 if let key = press.key,
                     let physical = Self.physicalKey(
@@ -1802,12 +1828,19 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
             }
             zoom(to: appliedFontSize + step)
         }
+        if !sceneCommands.isEmpty {
+            next?.pressesBegan(sceneCommands, with: event)
+        }
         guard !forwarded.isEmpty else { return }
         super.pressesBegan(forwarded, with: event)
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let forwarded = presses.filter { press in
+        let sceneCommands = presses.filter { forgetSceneCommandPress($0) }
+        if !sceneCommands.isEmpty {
+            next?.pressesEnded(sceneCommands, with: event)
+        }
+        let forwarded = presses.subtracting(sceneCommands).filter { press in
             let consumed = forgetConsumedArmedModifierPress(press)
             endPhysicalKeyForArmedModifiers(token: ObjectIdentifier(press))
             return Self.zoomShortcutStep(for: press) == nil && !consumed
@@ -1819,8 +1852,12 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         // Filter only presses this feature consumed. Zoom ⌘+/⌘− cancellations
         // must reach the superclass exactly as they did before this override.
+        let sceneCommands = presses.filter { forgetSceneCommandPress($0) }
+        if !sceneCommands.isEmpty {
+            next?.pressesCancelled(sceneCommands, with: event)
+        }
         var forwarded: Set<UIPress> = []
-        for press in presses {
+        for press in presses.subtracting(sceneCommands) {
             let consumed = forgetConsumedArmedModifierPress(press)
             cancelPhysicalKeyForArmedModifiers(token: ObjectIdentifier(press))
             if !consumed {
@@ -1936,6 +1973,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         }
     }
 
+    private func forgetSceneCommandPress(_ press: UIPress) -> Bool {
+        pressesRoutedToSceneCommands.remove(ObjectIdentifier(press)) != nil
+    }
+
     private func forgetConsumedArmedModifierPress(_ press: UIPress) -> Bool {
         pressesConsumedByArmedModifiers.remove(ObjectIdentifier(press)) != nil
     }
@@ -2005,11 +2046,30 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     private static func zoomShortcutStep(for press: UIPress) -> Float? {
-        guard let key = press.key, key.modifierFlags.contains(.command) else { return nil }
-        switch key.charactersIgnoringModifiers {
-        case "+", "=": return 1
-        case "-", "_": return -1
-        default: return nil
+        guard let key = press.key,
+            case .zoom(let step) = hardwarePressRoute(for: key)
+        else { return nil }
+        return step
+    }
+
+    private static func hardwarePressRoute(for key: UIKey) -> HardwarePressRoute {
+        hardwarePressRoute(
+            charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+            modifierFlags: key.modifierFlags)
+    }
+
+    /// Where a hardware press goes. ⌘+ / ⌘− step the zoom here, any other ⌘
+    /// chord belongs to the scene's key commands, and everything else,
+    /// including Ctrl, Esc, and arrows, reaches Ghostty unchanged.
+    static func hardwarePressRoute(
+        charactersIgnoringModifiers: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> HardwarePressRoute {
+        guard modifierFlags.contains(.command) else { return .terminal }
+        switch charactersIgnoringModifiers {
+        case "+", "=": return .zoom(1)
+        case "-", "_": return .zoom(-1)
+        default: return .sceneCommand
         }
     }
 

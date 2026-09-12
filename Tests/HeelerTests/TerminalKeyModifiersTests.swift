@@ -245,6 +245,30 @@ struct TerminalKeyModifiersTests {
         #expect(fixture.control.pendingModifiers.isEmpty)
     }
 
+    @Test func commandChordsBypassGhosttyExceptZoom() {
+        let route = { (characters: String, flags: UIKeyModifierFlags) in
+            HeelerTerminalView.hardwarePressRoute(
+                charactersIgnoringModifiers: characters, modifierFlags: flags)
+        }
+        for (characters, flags) in [
+            ("n", UIKeyModifierFlags.command), ("e", .command), ("1", .command),
+            ("h", [.command, .shift]), ("H", [.command, .shift]),
+        ] as [(String, UIKeyModifierFlags)] {
+            #expect(
+                route(characters, flags) == .sceneCommand,
+                "⌘\(flags.contains(.shift) ? "⇧" : "")\(characters)")
+        }
+        #expect(route("=", .command) == .zoom(1))
+        #expect(route("+", [.command, .shift]) == .zoom(1))
+        #expect(route("-", .command) == .zoom(-1))
+        #expect(route("_", [.command, .shift]) == .zoom(-1))
+        #expect(route("c", .control) == .terminal)
+        #expect(route(UIKeyCommand.inputEscape, []) == .terminal)
+        #expect(route(UIKeyCommand.inputUpArrow, []) == .terminal)
+        #expect(route("a", []) == .terminal)
+        #expect(route("=", []) == .terminal)
+    }
+
     @Test func physicalKeyMappingKeepsShiftedIdentityAndOmitsCommand() {
         #expect(
             HeelerTerminalView.physicalKey(
