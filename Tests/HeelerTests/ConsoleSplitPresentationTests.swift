@@ -170,8 +170,9 @@ struct ConsoleSplitPresentationTests {
         var state = ConsoleSplitVisibilityState()
         state.update(from: portrait)
         state.systemDidChangeVisibility(.automatic, presentation: portrait)
-        #expect(state.reportedSidebarVisibility == nil)
-        #expect(state.isSidebarVisible == nil)
+        // On the iPhone test destination, automatic resolves to the concrete detailOnly value.
+        #expect(state.reportedSidebarVisibility == false)
+        #expect(state.isSidebarVisible == false)
         #expect(state.showsAgentsAction)
         #expect(state.userVisibility == nil)
         state.showSidebar()
