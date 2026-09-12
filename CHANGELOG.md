@@ -14,7 +14,10 @@ Entries reference the issue that motivated them.
   out, to watch two Agents side by side; each window restores its own Agent
   after a relaunch. A notification for an Agent already on screen brings that
   window forward instead of opening another, and a live window resize sends
-  the Host one terminal resize once the window settles.
+  the Host one terminal resize once the window settles. A Host still has one
+  live terminal, so of two windows on the same Host only the one you are
+  working in is live; the other shows Live in Another Window with Take Over
+  Here, except while that Host's Shell Terminal is open.
 
 ## [0.1.7] - 2026-09-12
 
