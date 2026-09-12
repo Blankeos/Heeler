@@ -234,6 +234,62 @@ struct TerminalKeyModifiersTests {
         }
     }
 
+    @Test func armedControlAppliesToInsertedCharacterAndClearsModifiers() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.becomeFirstResponder())
+        fixture.control.toggleModifier(.control)
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func armedControlAppliesToPhysicalCharacterThroughThePressSeam() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        fixture.control.toggleModifier(.control)
+        #expect(fixture.terminal.applyArmedModifiers(to: .character("c")))
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func insertTextWithoutArmedModifiersStaysUnmodified() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.terminal.setLocalInputEnabled(true)
+        #expect(fixture.terminal.becomeFirstResponder())
+        fixture.terminal.insertText("c")
+        #expect(try await fixture.drain() == Data("c".utf8))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func sendInterruptIsControlOnlyAndClearsPrearmedModifiers() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.close() }
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+
+        fixture.control.toggleModifier(.option)
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+
+        fixture.control.toggleModifier(.shift)
+        fixture.control.sendInterrupt()
+        #expect(try await fixture.drain() == Data([3]))
+        #expect(fixture.control.pendingModifiers.isEmpty)
+    }
+
+    @Test func sendInterruptClearsArmedModifiersWhenTheTerminalIsMissing() {
+        let control = TerminalKeyboardControl()
+        control.toggleModifier(.option)
+        control.sendInterrupt()
+        #expect(control.pendingModifiers.isEmpty)
+    }
+
     @Test func kittyProtocolReportsPressAndReleaseWithoutPasteFraming() async throws {
         let fixture = try await Fixture.make()
         defer { fixture.close() }

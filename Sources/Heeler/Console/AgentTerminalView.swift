@@ -948,10 +948,7 @@ struct AgentTerminalView: View {
                     sendQuickKey: sendAgentQuickKey,
                     paste: { text in keyboardControl.paste(text) },
                     toggleModifier: { keyboardControl.toggleModifier($0) },
-                    sendInterrupt: {
-                        keyboardControl.setModifierArmed(.control, armed: true)
-                        sendAgentQuickKey(.character("c"))
-                    },
+                    sendInterrupt: { keyboardControl.sendInterrupt() },
                     showComposer: { selectInputMode(.composer) },
                     restoreComposerThen: restoreComposerThen)))
             .onAppear {

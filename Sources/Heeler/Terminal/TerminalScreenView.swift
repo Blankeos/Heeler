@@ -39,9 +39,13 @@ final class TerminalKeyboardControl {
     weak var terminal: HeelerTerminalView? {
         didSet {
             oldValue?.onFirstResponderChange = nil
+            if oldValue?.keyboardControl === self {
+                oldValue?.keyboardControl = nil
+            }
             terminal?.onFirstResponderChange = { [weak self] in
                 self?.syncFirstResponder()
             }
+            terminal?.keyboardControl = self
             syncFirstResponder()
         }
     }
@@ -70,10 +74,10 @@ final class TerminalKeyboardControl {
     }
 
     /// One-shot sticky modifiers for the ⌃/⌥ caps on the terminal key
-    /// surfaces (#270). Tapping a modifier arms it for the next key only;
-    /// firing any key consumes and clears it, and tapping the armed
-    /// modifier again disarms it. No lock mode. Shared here so the Shell
-    /// Controls pad and the Agent quick-key rows behave identically.
+    /// surfaces (#270). Tapping a modifier arms it for the next key only —
+    /// on-screen `sendQuickKey` or the next physical press / `insertText`.
+    /// Firing any mapped key consumes and clears it; tapping the armed
+    /// modifier again disarms it. No lock mode.
     private(set) var pendingModifiers = TerminalKeyModifiers()
 
     func isModifierArmed(_ modifier: TerminalKeyModifiers) -> Bool {
@@ -95,6 +99,15 @@ final class TerminalKeyboardControl {
     func sendQuickKey(_ key: AgentQuickKey) {
         guard let terminal, terminal.sendQuickKey(key, modifiers: pendingModifiers) else { return }
         pendingModifiers = []
+    }
+
+    /// Control-only interrupt (Ctrl-C). Pre-armed Alt/Shift are discarded so
+    /// the advertised chord cannot become Ctrl+Alt+C.
+    func sendInterrupt() {
+        pendingModifiers = []
+        guard let terminal, terminal.sendQuickKey(.character("c"), modifiers: .control) else {
+            return
+        }
     }
 
     /// Open Terminal uses the same key encoding while retaining the Shell's
@@ -581,6 +594,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     var raisesKeyboardWhenReady = false
     /// Notifies ``TerminalKeyboardControl`` when first-responder intent changes.
     var onFirstResponderChange: (() -> Void)?
+    /// One-shot ⌃/⌥/⇧ from the app-owned key surfaces. Physical presses and
+    /// `insertText` consult this so an armed modifier applies to the next
+    /// hardware key; empty means Ghostty owns the event unchanged.
+    weak var keyboardControl: TerminalKeyboardControl?
     /// Notifies ``TerminalScrollControl`` when DECSET alternate-screen state
     /// flips. `refs #268`.
     var onAlternateScreenChange: (() -> Void)?
@@ -649,6 +666,14 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     private var touchScrollMomentumDisplayLink: CADisplayLink?
     private var touchScrollMomentumVelocityY: CGFloat = 0
     private var touchScrollMomentumTimestamp: CFTimeInterval = 0
+    /// Presses whose began event was rewritten through armed modifiers, so
+    /// Ghostty must not also see their ended/cancelled counterparts.
+    private var pressesConsumedByArmedModifiers: Set<ObjectIdentifier> = []
+    /// Hardware character keys also deliver `insertText` after `pressesBegan`.
+    /// Drop that echo when the press already consumed an armed modifier.
+    private var suppressInsertTextMatching: Character?
+    /// Hardware Backspace may also call `deleteBackward` after `pressesBegan`.
+    private var suppressArmedModifierBackspace = false
 
     private lazy var touchScrollGesture = UIPanGestureRecognizer(
         target: self,
@@ -1173,6 +1198,13 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// `AgentQuickKey.enter` — not LF.
     override func insertText(_ text: String) {
         guard isLocalInputEnabled else { return }
+        if text.count == 1, text.first == suppressInsertTextMatching {
+            suppressInsertTextMatching = nil
+            return
+        }
+        if applyArmedModifiers(toInsertedText: text) {
+            return
+        }
         if text == "\n" {
             super.insertText("\r")
             return
@@ -1181,6 +1213,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     override func deleteBackward() {
+        if suppressArmedModifierBackspace {
+            suppressArmedModifierBackspace = false
+            return
+        }
         guard isLocalInputEnabled else { return }
 
         // Ghostty already synchronizes marked-text deletion with UIKit. Raw
@@ -1647,9 +1683,15 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// leaves the global setting stale. Handle them here and swallow both the
     /// press and its release so Ghostty never sees the shortcut.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        suppressInsertTextMatching = nil
+        suppressArmedModifierBackspace = false
         var forwarded: Set<UIPress> = []
         for press in presses {
             guard let step = Self.zoomShortcutStep(for: press) else {
+                if applyArmedModifiers(to: press) {
+                    pressesConsumedByArmedModifiers.insert(ObjectIdentifier(press))
+                    continue
+                }
                 forwarded.insert(press)
                 continue
             }
@@ -1660,9 +1702,98 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let forwarded = presses.filter { Self.zoomShortcutStep(for: $0) == nil }
+        let forwarded = presses.filter { press in
+            Self.zoomShortcutStep(for: press) == nil
+                && !forgetConsumedArmedModifierPress(press)
+        }
         guard !forwarded.isEmpty else { return }
         super.pressesEnded(Set(forwarded), with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let forwarded = presses.filter { press in
+            Self.zoomShortcutStep(for: press) == nil
+                && !forgetConsumedArmedModifierPress(press)
+        }
+        guard !forwarded.isEmpty else { return }
+        super.pressesCancelled(Set(forwarded), with: event)
+    }
+
+    /// Applies a one-shot ⌃/⌥/⇧ to this key through ``sendQuickKey`` encoding.
+    /// Returns false when nothing is armed so Ghostty still receives the event.
+    @discardableResult
+    func applyArmedModifiers(to key: AgentQuickKey) -> Bool {
+        guard let keyboardControl, !keyboardControl.pendingModifiers.isEmpty else {
+            return false
+        }
+        keyboardControl.sendQuickKey(key)
+        return true
+    }
+
+    private func applyArmedModifiers(to press: UIPress) -> Bool {
+        guard let key = Self.quickKey(for: press) else { return false }
+        guard applyArmedModifiers(to: key) else { return false }
+        switch key {
+        case .character(let character):
+            suppressInsertTextMatching = character
+        case .backspace:
+            suppressArmedModifierBackspace = true
+        default:
+            break
+        }
+        return true
+    }
+
+    private func applyArmedModifiers(toInsertedText text: String) -> Bool {
+        if text == "\n" || text == "\r" {
+            return applyArmedModifiers(to: .enter)
+        }
+        guard text.count == 1, let character = text.first else { return false }
+        return applyArmedModifiers(to: .character(character))
+    }
+
+    private func forgetConsumedArmedModifierPress(_ press: UIPress) -> Bool {
+        pressesConsumedByArmedModifiers.remove(ObjectIdentifier(press)) != nil
+    }
+
+    /// Maps a hardware press to the same `AgentQuickKey` `sendQuickKey` encodes.
+    /// Unmapped keys return nil so they are never swallowed.
+    private static func quickKey(for press: UIPress) -> AgentQuickKey? {
+        guard let key = press.key else { return nil }
+        switch key.keyCode {
+        case .keyboardEscape: return .escape
+        case .keyboardTab: return .tab
+        case .keyboardReturnOrEnter: return .enter
+        case .keyboardDeleteOrBackspace: return .backspace
+        case .keyboardDeleteForward: return .forwardDelete
+        case .keyboardLeftArrow: return .left
+        case .keyboardRightArrow: return .right
+        case .keyboardUpArrow: return .up
+        case .keyboardDownArrow: return .down
+        case .keyboardHome: return .home
+        case .keyboardEnd: return .end
+        case .keyboardPageUp: return .pageUp
+        case .keyboardPageDown: return .pageDown
+        case .keyboardInsert: return .insert
+        case .keyboardF1: return .function(.f1)
+        case .keyboardF2: return .function(.f2)
+        case .keyboardF3: return .function(.f3)
+        case .keyboardF4: return .function(.f4)
+        case .keyboardF5: return .function(.f5)
+        case .keyboardF6: return .function(.f6)
+        case .keyboardF7: return .function(.f7)
+        case .keyboardF8: return .function(.f8)
+        case .keyboardF9: return .function(.f9)
+        case .keyboardF10: return .function(.f10)
+        case .keyboardF11: return .function(.f11)
+        case .keyboardF12: return .function(.f12)
+        default:
+            let glyphs = key.charactersIgnoringModifiers
+            guard glyphs.count == 1, let character = glyphs.first, !character.isISOControl else {
+                return nil
+            }
+            return .character(character)
+        }
     }
 
     private static func zoomShortcutStep(for press: UIPress) -> Float? {
