@@ -47,6 +47,8 @@ struct ConsoleView: View {
     /// later — an extra reflow, and a Connecting dialog that visibly jumps
     /// from the middle of the screen to the middle of the terminal.
     @State private var keyboardInset = TerminalKeyboardInset()
+    @State private var splitVisibility = ConsoleSplitVisibilityState()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -56,99 +58,133 @@ struct ConsoleView: View {
         // width collapses into the familiar push navigation. The router's
         // path stays the single source of truth — the sidebar selection is a
         // projection of it, so notification deep links keep working.
-        NavigationSplitView {
-            content
-                .navigationTitle("Agents")
-                .searchable(text: $searchText, prompt: "Search Agents")
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                .toolbar {
-                    // A filter is meaningless with a single Host.
-                    if hosts.hosts.count > 1 {
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu(
-                                "Filter by Host",
-                                systemImage: hostFilter == nil
-                                    ? "line.3.horizontal.decrease.circle"
-                                    : "line.3.horizontal.decrease.circle.fill"
-                            ) {
-                                Picker("Host", selection: $hostFilter) {
-                                    Text("All Hosts").tag(Host.ID?.none)
-                                    ForEach(hosts.hosts) { host in
-                                        Text(host.displayName).tag(Host.ID?.some(host.id))
+        GeometryReader { geometry in
+            let presentation = ConsoleSplitPresentation(
+                horizontalSizeClass: horizontalSizeClass,
+                // Resolve the aspect ratio from the full bounds, including safe areas.
+                size: CGSize(
+                    width: geometry.size.width
+                        + geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing,
+                    height: geometry.size.height
+                        + geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom),
+                hasSelection: selectedAgent.wrappedValue != nil)
+            NavigationSplitView(columnVisibility: Binding(
+                get: { splitVisibility.visibility },
+                set: { splitVisibility.setVisibility($0) })
+            ) {
+                content
+                    .navigationTitle("Agents")
+                    .searchable(text: $searchText, prompt: "Search Agents")
+                    .navigationSplitViewColumnWidth(
+                        min: presentation.sidebarWidth.minimum,
+                        ideal: presentation.sidebarWidth.ideal,
+                        max: presentation.sidebarWidth.maximum)
+                    .toolbar {
+                        // A filter is meaningless with a single Host.
+                        if hosts.hosts.count > 1 {
+                            ToolbarItem(placement: .primaryAction) {
+                                Menu(
+                                    "Filter by Host",
+                                    systemImage: hostFilter == nil
+                                        ? "line.3.horizontal.decrease.circle"
+                                        : "line.3.horizontal.decrease.circle.fill"
+                                ) {
+                                    Picker("Host", selection: $hostFilter) {
+                                        Text("All Hosts").tag(Host.ID?.none)
+                                        ForEach(hosts.hosts) { host in
+                                            Text(host.displayName).tag(Host.ID?.some(host.id))
+                                        }
                                     }
                                 }
+                                .hoverEffect(.highlight)
                             }
                         }
-                    }
-                    if !hosts.hosts.isEmpty {
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu {
-                                Picker("Presentation", selection: presentationModeBinding) {
-                                    ForEach(ConsoleListPresentationMode.allCases) { mode in
-                                        Text(mode.title).tag(mode)
+                        if !hosts.hosts.isEmpty {
+                            ToolbarItem(placement: .primaryAction) {
+                                Menu {
+                                    Picker("Presentation", selection: presentationModeBinding) {
+                                        ForEach(ConsoleListPresentationMode.allCases) { mode in
+                                            Text(mode.title).tag(mode)
+                                        }
                                     }
+                                } label: {
+                                    Label(
+                                        "Presentation",
+                                        systemImage: listPresentation.mode == .grouped
+                                            ? "list.bullet.rectangle"
+                                            : "list.bullet")
                                 }
-                            } label: {
-                                Label(
-                                    "Presentation",
-                                    systemImage: listPresentation.mode == .grouped
-                                        ? "list.bullet.rectangle"
-                                        : "list.bullet")
+                                .hoverEffect(.highlight)
+                                .accessibilityLabel("Agent list presentation")
+                                .accessibilityValue(listPresentation.mode.title)
                             }
-                            .accessibilityLabel("Agent list presentation")
-                            .accessibilityValue(listPresentation.mode.title)
                         }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Hosts", systemImage: "server.rack") {
-                            presentHosts()
-                        }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Settings", systemImage: "gearshape") {
-                            isShowingSettings = true
-                        }
-                    }
-                    if !hosts.hosts.isEmpty {
                         ToolbarItem(placement: .primaryAction) {
-                            Button("New Agent", systemImage: "plus") {
-                                isStartingAgent = true
+                            Button("Hosts", systemImage: "server.rack") {
+                                presentHosts()
+                            }
+                            .hoverEffect(.highlight)
+                        }
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Settings", systemImage: "gearshape") {
+                                isShowingSettings = true
+                            }
+                            .hoverEffect(.highlight)
+                        }
+                        if !hosts.hosts.isEmpty {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button("New Agent", systemImage: "plus") {
+                                    isStartingAgent = true
+                                }
+                                .hoverEffect(.highlight)
                             }
                         }
                     }
-                }
-                .sheet(item: $hostSheet) { destination in
-                    // HostListView brings its own NavigationStack.
-                    HostListView(
-                        store: hosts,
-                        initialHostID: destination.hostID,
-                        connectionStatuses: console.hostStatuses,
-                        standingFailures: console.hostStandingFailures,
-                        latencies: console.hostLatencies,
-                        manualReconnectInFlightHostIDs: manualReconnectInFlightHostIDs,
-                        retryConnection: { await reconnectHost($0) })
-                }
-                .sheet(isPresented: $isStartingAgent) {
-                    // StartAgentView brings its own NavigationStack.
-                    StartAgentView(hosts: hosts.hosts, console: console) { id in
-                        // A fresh launch lands in its own terminal, exactly
-                        // as tapping the new row would.
-                        notificationRouter.path = [id]
-                    }
-                }
-                .sheet(isPresented: $isShowingSettings) {
-                    SettingsView(
-                        terminal: terminal,
-                        appearance: appearance,
-                        pushRegistration: pushRegistration,
-                        notificationPreferences: notificationPreferences,
-                        relaySettings: relaySettings,
-                        liveActivities: liveActivities,
-                        console: console,
-                        hosts: hosts.hosts)
-                }
-        } detail: {
-            detail
+            } detail: {
+                detail
+            }
+            .navigationSplitViewStyle(ConsoleNavigationSplitViewStyle(style: presentation.style))
+            .onAppear { splitVisibility.seed(from: presentation) }
+        }
+        // The detail's actions can present these even while the sidebar is hidden.
+        .sheet(item: $hostSheet) { destination in
+            // HostListView brings its own NavigationStack.
+            HostListView(
+                store: hosts,
+                initialHostID: destination.hostID,
+                connectionStatuses: console.hostStatuses,
+                standingFailures: console.hostStandingFailures,
+                latencies: console.hostLatencies,
+                manualReconnectInFlightHostIDs: manualReconnectInFlightHostIDs,
+                retryConnection: { await reconnectHost($0) })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
+        }
+        .sheet(isPresented: $isStartingAgent) {
+            // StartAgentView brings its own NavigationStack.
+            StartAgentView(hosts: hosts.hosts, console: console) { id in
+                // A fresh launch lands in its own terminal, exactly
+                // as tapping the new row would.
+                notificationRouter.path = [id]
+            }
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView(
+                terminal: terminal,
+                appearance: appearance,
+                pushRegistration: pushRegistration,
+                notificationPreferences: notificationPreferences,
+                relaySettings: relaySettings,
+                liveActivities: liveActivities,
+                console: console,
+                hosts: hosts.hosts)
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .modifier(
             ConsoleStatusBarModifier(
@@ -254,9 +290,14 @@ struct ConsoleView: View {
                 missingAgentSurface(presentation)
             }
         } else {
-            ContentUnavailableView(
-                "No Agent Selected", systemImage: "rectangle.on.rectangle",
-                description: Text("Choose an Agent to view its live terminal."))
+            ConsoleEmptyDetailView(
+                presentation: ConsoleEmptyDetailPresentation(hasHosts: !hosts.hosts.isEmpty)
+            ) { action in
+                switch action {
+                case .newAgent: isStartingAgent = true
+                case .hosts: presentHosts()
+                }
+            }
         }
     }
 
@@ -284,6 +325,7 @@ struct ConsoleView: View {
         } actions: {
             Button("Back to Console") { notificationRouter.path = [] }
                 .buttonStyle(.borderedProminent)
+                .hoverEffect(.highlight)
         }
     }
 
@@ -319,6 +361,7 @@ struct ConsoleView: View {
             } actions: {
                 Button("Add Host") { presentHosts() }
                     .buttonStyle(.borderedProminent)
+                    .hoverEffect(.highlight)
             }
         case .noAgents:
             ContentUnavailableView {
@@ -333,6 +376,7 @@ struct ConsoleView: View {
                     systemImage: "line.3.horizontal.decrease.circle")
             } actions: {
                 Button("Show All Hosts") { hostFilter = nil }
+                    .hoverEffect(.highlight)
             }
         case .noSearchResults:
             ContentUnavailableView {
@@ -342,6 +386,7 @@ struct ConsoleView: View {
             } actions: {
                 Button("Clear Search") { searchText = "" }
                     .buttonStyle(.borderedProminent)
+                    .hoverEffect(.highlight)
             }
         case .rows:
             List(selection: selectedAgent) {
@@ -401,6 +446,7 @@ struct ConsoleView: View {
                 isPinned: console.pins.isPinned(
                     hostID: agent.hostID, paneID: agent.agent.paneID))
         }
+        .hoverEffect(.highlight)
         .contextMenu {
             let pinned = console.pins.isPinned(
                 hostID: agent.hostID, paneID: agent.agent.paneID)

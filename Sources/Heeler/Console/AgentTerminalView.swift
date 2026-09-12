@@ -454,6 +454,7 @@ struct AgentTerminalView: View {
                 links: attach.attachLinks,
                 open: { link in openAttachLink(link) },
                 copy: { link in UIPasteboard.general.string = link.target })
+            // Regular width keeps the popover; only compact size classes adapt.
             .presentationCompactAdaptation(.sheet)
         }
         .sheet(isPresented: $isStartingAgent) {
