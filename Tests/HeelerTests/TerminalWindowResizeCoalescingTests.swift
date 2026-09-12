@@ -112,6 +112,102 @@ struct TerminalWindowResizeCoalescingTests {
         }
     }
 
+    /// A cancelled freeze throws away the grid it held. The Host has to hear
+    /// that grid anyway, and exactly once.
+    @MainActor
+    @Test func aSettledSizeReportsOnceAndConsumesTheEngineDuplicate() async {
+        var reportedGrids: [TerminalGridSize] = []
+        let bridge = TerminalSessionCallbackBridge(
+            onSizeChanged: { columns, rows in
+                reportedGrids.append(TerminalGridSize(columns: columns, rows: rows))
+            },
+            onViewportTextChanged: nil,
+            onSend: nil,
+            onScroll: nil,
+            onPaste: nil)
+
+        bridge.reportSettledSize(columns: 90, rows: 30)
+        #expect(reportedGrids == [TerminalGridSize(columns: 90, rows: 30)])
+
+        // Ghostty's own callback for the same grid, still in its pipeline.
+        await withCheckedContinuation { continuation in
+            bridge.onViewport = { _ in continuation.resume() }
+            bridge.resize(InMemoryTerminalViewport(columns: 90, rows: 30))
+        }
+        bridge.onViewport = nil
+
+        #expect(reportedGrids == [TerminalGridSize(columns: 90, rows: 30)])
+    }
+
+    @MainActor
+    @Test func aSettledSizeDuringAFreezeWaitsForTheThaw() async throws {
+        var reportedGrids: [TerminalGridSize] = []
+        let bridge = TerminalSessionCallbackBridge(
+            onSizeChanged: { columns, rows in
+                reportedGrids.append(TerminalGridSize(columns: columns, rows: rows))
+            },
+            onViewportTextChanged: nil,
+            onSend: nil,
+            onScroll: nil,
+            onPaste: nil)
+        let phases = TerminalGridReportPhaseRecorder(observing: bridge)
+
+        bridge.beginSizeReportDeferral()
+        bridge.reportSettledSize(columns: 90, rows: 30)
+        #expect(reportedGrids.isEmpty)
+        bridge.finishSizeReportDeferral()
+
+        let forwarded = try await phases.thawedGrid()
+        #expect(forwarded == TerminalGridSize(columns: 90, rows: 30))
+        #expect(reportedGrids == [TerminalGridSize(columns: 90, rows: 30)])
+    }
+
+    /// Disabling local input cancels the grid freeze. When that lands inside
+    /// a window resize's settle, the grid the window settled on must still
+    /// reach the Host: Ghostty will not report an unchanged grid again.
+    @MainActor
+    @Test func cancellingAWindowResizeFreezeStillReportsTheSettledGrid() async throws {
+        var reportedGrids: [TerminalGridSize] = []
+        let terminal = TerminalScreenView.makeConfiguredTerminal(
+            onSizeChanged: { columns, rows in
+                reportedGrids.append(TerminalGridSize(columns: columns, rows: rows))
+            },
+            notificationCenter: NotificationCenter())
+        terminal.frame = CGRect(x: 0, y: 0, width: 834, height: 1100)
+        let controller = UIViewController()
+        controller.view = terminal
+        let window = try await makeTestWindow(
+            frame: terminal.bounds,
+            rootViewController: controller)
+        defer { window.isHidden = true }
+        try await waitForGhosttyContentLayer(in: terminal)
+        terminal.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+        reportedGrids.removeAll()
+
+        window.frame = CGRect(x: 0, y: 0, width: 700, height: 900)
+        window.layoutIfNeeded()
+        try #require(terminal.gridReportPhase == .deferring)
+        // Stands in for Ghostty's measurement of the resized surface, so the
+        // settled grid does not depend on the engine's schedule.
+        terminal.terminalDidResize(
+            TerminalGridMetrics(
+                columns: 71, rows: 33,
+                widthPixels: 2_100, heightPixels: 2_640,
+                cellWidthPixels: 30, cellHeightPixels: 49))
+
+        terminal.setLocalInputEnabled(false)
+
+        let settled = TerminalGridSize(columns: 71, rows: 33)
+        #expect(terminal.gridReportPhase == .live)
+        #expect(reportedGrids.first == settled)
+        // The cancelled settle must not report it a second time.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(
+            reportedGrids.filter { $0 == settled }.count == 1,
+            "the settled grid reached the Host as \(reportedGrids)")
+    }
+
     /// Keyboard notifications are process-wide. Only the window that owns
     /// the keyboard measures it; another window of the app leaves its
     /// terminal's inset alone (#157).
