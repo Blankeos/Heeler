@@ -610,6 +610,8 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
         textView.updateKeyboard(presentation: keyboardPresentation)
         textView.onKeyboardHandoffSettled = onKeyboardHandoffSettled
         let shouldFocus = isFocused
+        let coordinator = context.coordinator
+        coordinator.wantsFocus = shouldFocus
         guard shouldFocus != textView.isFirstResponder else { return }
         DispatchQueue.main.async { [weak textView] in
             guard let textView else { return }
@@ -628,6 +630,11 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
                     textView.becomeFirstResponder()
                 }
             } else {
+                // UIKit can flush a pending update from inside
+                // `becomeFirstResponder`, after the view is first responder
+                // but before `textViewDidBeginEditing` records it. That
+                // update's stale `false` must not undo the focus it raced.
+                guard !coordinator.wantsFocus else { return }
                 _ = textView.resignFirstResponder()
             }
         }
@@ -653,6 +660,9 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
         var onEdit: (String, NSRange) -> Void
+        /// The latest focus intent, from either SwiftUI or UIKit, so a
+        /// deferred focus change can recheck it before acting.
+        var wantsFocus = false
         private var isFocused: Binding<Bool>
 
         init(onEdit: @escaping (String, NSRange) -> Void, isFocused: Binding<Bool>) {
@@ -670,10 +680,12 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_: UITextView) {
+            wantsFocus = true
             isFocused.wrappedValue = true
         }
 
         func textViewDidEndEditing(_: UITextView) {
+            wantsFocus = false
             isFocused.wrappedValue = false
         }
     }
