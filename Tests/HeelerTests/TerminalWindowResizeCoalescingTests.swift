@@ -13,19 +13,24 @@ struct TerminalWindowResizeCoalescingTests {
     @Test func theFirstLayoutOnlyEstablishesTheBaseline() {
         var tracker = TerminalWindowResizeTracker()
 
-        #expect(!tracker.windowDidLayout(size: CGSize(width: 1024, height: 768)))
-        #expect(!tracker.windowDidLayout(size: CGSize(width: 1024, height: 768)))
+        let first = tracker.windowDidLayout(size: CGSize(width: 1024, height: 768))
+        let repeated = tracker.windowDidLayout(size: CGSize(width: 1024, height: 768))
+        #expect(!first)
+        #expect(!repeated)
     }
 
     @Test func onlyAChangedWindowSizeCounts() {
         var tracker = TerminalWindowResizeTracker()
         _ = tracker.windowDidLayout(size: CGSize(width: 1024, height: 768))
 
-        #expect(tracker.windowDidLayout(size: CGSize(width: 900, height: 768)))
-        #expect(tracker.windowDidLayout(size: CGSize(width: 880, height: 760)))
+        let narrower = tracker.windowDidLayout(size: CGSize(width: 900, height: 768))
+        let smaller = tracker.windowDidLayout(size: CGSize(width: 880, height: 760))
         // A layout pass for any other reason — the keyboard, a split-view
         // column — leaves the window's size alone.
-        #expect(!tracker.windowDidLayout(size: CGSize(width: 880, height: 760)))
+        let unchanged = tracker.windowDidLayout(size: CGSize(width: 880, height: 760))
+        #expect(narrower)
+        #expect(smaller)
+        #expect(!unchanged)
     }
 
     /// The choke point itself: N grid reports inside one freeze leave as one
