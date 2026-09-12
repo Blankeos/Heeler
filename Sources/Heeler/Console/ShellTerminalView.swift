@@ -13,6 +13,7 @@ import UIKit
 /// down, and the IME's composition survives a round trip through Keys.
 struct ShellTerminalView: View {
     let store: ShellTerminalStore
+    let agentID: ConsoleAgent.ID
     let terminal: TerminalSettings
     let activity: AppActivityCoordinator
     let isReturning: Bool
@@ -190,6 +191,10 @@ struct ShellTerminalView: View {
             } message: {
                 Text(store.pasteErrorMessage ?? "")
             }
+            .modifier(ConsoleDetailPresentationRegistration(
+                agentID: agentID,
+                isPresenting: isConfirmingClose || store.pendingPaste != nil
+                    || store.pasteErrorMessage != nil))
             .onChange(of: activity.activationCount, initial: true) { _, _ in
                 store.didBecomeActive(
                     afterPossibleSuspension: activity.lastAbsenceMayHaveSuspended)

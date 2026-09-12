@@ -96,6 +96,7 @@ struct ShellTerminalStoreTests {
         let controller = UIHostingController(
             rootView: ShellTerminalView(
                 store: store,
+                agentID: ConsoleAgent.ID(hostID: UUID(), paneID: "w1:p-agent"),
                 terminal: settings,
                 activity: AppActivityCoordinator(),
                 isReturning: false,

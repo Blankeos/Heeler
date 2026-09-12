@@ -24,11 +24,35 @@ final class ConsoleCommandRegistry {
         let send: @MainActor () async -> Void
     }
 
+    struct DetailPresentation {
+        let token: UUID
+        let agentID: ConsoleAgent.ID
+        let isPresenting: Bool
+    }
+
     private(set) var terminal: Terminal?
     private(set) var composer: Composer?
+    /// The wrapper and Shell Terminal can both present. Neither may overwrite
+    /// or remove the other surface's coverage when its own presentation ends.
+    private(set) var detailPresentations: [UUID: DetailPresentation] = [:]
 
     func register(_ terminal: Terminal) { self.terminal = terminal }
     func register(_ composer: Composer) { self.composer = composer }
+
+    func register(_ presentation: DetailPresentation) {
+        detailPresentations[presentation.token] = presentation
+    }
+
+    func removeDetailPresentation(_ token: UUID) {
+        detailPresentations.removeValue(forKey: token)
+    }
+
+    func isDetailPresenting(for selection: ConsoleAgent.ID?) -> Bool {
+        guard let selection else { return false }
+        return detailPresentations.values.contains {
+            $0.agentID == selection && $0.isPresenting
+        }
+    }
 
     func removeTerminal(_ token: UUID) {
         guard terminal?.token == token else { return }
@@ -107,9 +131,11 @@ struct ConsoleCommandTarget {
         _ action: ConsoleCommandAction, in context: Context,
         terminal: ConsoleCommandRegistry.Terminal?
     ) -> Bool {
-        // Only the selected, on-stage detail can cover the Console. A stale
-        // registration must neither block navigation nor open a second sheet.
-        guard !context.isCovered, terminal?.isPresenting != true else { return false }
+        // Coverage belongs to the selected detail. Attach must also be on stage;
+        // the wrapper and Shell Terminal have independent presentation tokens.
+        guard !context.isCovered, terminal?.isPresenting != true,
+            !registry.isDetailPresenting(for: context.selection)
+        else { return false }
         let composer = activeComposer(for: terminal)
         // During a responder handoff, a pending Composer blur must not let
         // Send win over an already-focused search field or terminal.
@@ -168,6 +194,34 @@ struct ConsoleCommandTarget {
             return
         }
         await composer.send()
+    }
+}
+
+/// Covers presentations outside the Attach surface, including the detail's
+/// wrapper alerts and Shell Terminal. Stores values only, with no action captures.
+struct ConsoleDetailPresentationRegistration: ViewModifier {
+    let agentID: ConsoleAgent.ID
+    let isPresenting: Bool
+    @Environment(\.consoleCommandRegistry) private var registry
+    @State private var token = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { register() }
+            .onChange(of: agentID) { _, _ in update() }
+            .onChange(of: isPresenting) { _, _ in update() }
+            .onDisappear { registry?.removeDetailPresentation(token) }
+    }
+
+    private func update() {
+        guard registry?.detailPresentations[token] != nil else { return }
+        register()
+    }
+
+    private func register() {
+        registry?.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: token, agentID: agentID, isPresenting: isPresenting))
     }
 }
 

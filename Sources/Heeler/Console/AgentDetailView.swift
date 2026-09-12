@@ -101,6 +101,7 @@ struct AgentDetailView: View {
             if let shell = openTerminal.shell {
                 ShellTerminalView(
                     store: shell,
+                    agentID: agent.id,
                     terminal: terminal,
                     activity: activity,
                     isReturning: openTerminal.isReturning,
@@ -156,5 +157,8 @@ struct AgentDetailView: View {
         } message: {
             Text(openTerminal.closeFailureMessage ?? "")
         }
+        .modifier(ConsoleDetailPresentationRegistration(
+            agentID: agent.id,
+            isPresenting: openTerminal.failure != nil || openTerminal.closeFailureMessage != nil))
     }
 }

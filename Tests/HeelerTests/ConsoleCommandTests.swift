@@ -359,7 +359,7 @@ struct ConsoleCommandRegistryTests {
         #expect(actionCount == 1)
     }
 
-    @Test func staleDetailPresentationDoesNotCoverAnotherSelectionOrShell() {
+    @Test func staleAttachPresentationDefersToCurrentDetailCoverage() {
         let registry = ConsoleCommandRegistry()
         var selected: ConsoleAgent.ID? = agent
         var onStage = true
@@ -378,14 +378,105 @@ struct ConsoleCommandRegistryTests {
         selected = nil
         #expect(commands.allows(.settings))
 
-        // Shell Terminal keeps the Agent selected, but its Attach is off stage.
+        // An unobstructed Shell Terminal ignores the off-stage Attach, while
+        // its own presentation must independently cover the selected detail.
         selected = agent
         onStage = false
         #expect(commands.allows(.newAgent))
         #expect(commands.allows(.nextAgent))
         #expect(!commands.allows(.toggleInputMode))
+        let shellToken = UUID()
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: shellToken, agentID: agent, isPresenting: true))
+        #expect(!commands.allows(.newAgent))
+        #expect(!commands.allows(.nextAgent))
+        registry.removeDetailPresentation(shellToken)
+        #expect(commands.allows(.newAgent))
         rootCovered = true
         #expect(!commands.allows(.newAgent))
+    }
+
+    @Test func shellPresentationBlocksNavigationAndPresentationCommands() {
+        let registry = ConsoleCommandRegistry()
+        let shellToken = UUID()
+        let rows =
+            [agent]
+            + (2...9).map {
+                ConsoleAgent.ID(hostID: agent.hostID, paneID: "pane-\($0)")
+            }
+        var actionCount = 0
+        let didFire: @MainActor () -> Void = { actionCount += 1 }
+        // No Attach registration exists while the Shell Terminal is on screen.
+        let commands = ConsoleCommandTarget(
+            registry: registry,
+            context: {
+                .init(
+                    selection: agent, agents: rows, isSearchFocused: false,
+                    isCovered: false, inputMode: .direct)
+            },
+            navigate: { _ in didFire() }, focusSearch: didFire, newAgent: didFire,
+            settings: didFire, hosts: didFire, closeAgent: didFire)
+        let shellCommands = ConsoleCommandShortcut.all.filter {
+            $0.action != .toggleInputMode && $0.action != .sendDraft
+        }
+        for shortcut in shellCommands {
+            #expect(commands.allows(shortcut.action))
+        }
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: shellToken, agentID: agent, isPresenting: true))
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(!commands.allows(shortcut.action))
+            commands.perform(shortcut.action)
+        }
+        #expect(actionCount == 0)
+        registry.removeDetailPresentation(shellToken)
+        for shortcut in shellCommands {
+            #expect(commands.allows(shortcut.action))
+        }
+        commands.perform(.newAgent)
+        #expect(actionCount == 1)
+    }
+
+    @Test func wrapperAndShellPresentationTokensPreserveIndependentCoverage() {
+        let registry = ConsoleCommandRegistry()
+        let wrapperToken = UUID()
+        let shellToken = UUID()
+        let otherAgent = ConsoleAgent.ID(hostID: UUID(), paneID: agent.paneID)
+        var selected: ConsoleAgent.ID? = agent
+        let commands = target(registry: registry, context: { context(selection: selected) })
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: shellToken, agentID: agent, isPresenting: true))
+        // The wrapper's initial non-presenting registration cannot mask its child.
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: wrapperToken, agentID: agent, isPresenting: false))
+        #expect(!commands.allows(.nextAgent))
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: wrapperToken, agentID: agent, isPresenting: true))
+        registry.removeDetailPresentation(shellToken)
+        #expect(!commands.allows(.nextAgent))
+        #expect(!commands.allows(.hosts))
+        // The wrapper also gates an on-stage Attach after returning from Shell.
+        registerTerminal(registry)
+        #expect(!commands.allows(.toggleInputMode))
+        registry.removeDetailPresentation(shellToken)
+        #expect(registry.detailPresentations[wrapperToken] != nil)
+        selected = otherAgent
+        #expect(commands.allows(.hosts))
+        selected = nil
+        #expect(commands.allows(.settings))
+        selected = agent
+        registry.register(
+            ConsoleCommandRegistry.DetailPresentation(
+                token: wrapperToken, agentID: agent, isPresenting: false))
+        #expect(commands.allows(.nextAgent))
+        #expect(commands.allows(.toggleInputMode))
+        registry.removeDetailPresentation(wrapperToken)
+        #expect(registry.detailPresentations.isEmpty)
     }
 
     @Test func availabilityProjectsContextOnceWithActiveComposer() {
