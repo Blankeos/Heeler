@@ -991,6 +991,12 @@ struct AgentComposerStoreTests {
         ) {
             fixture.staging.state.isBusy
         }
+        try await waitUntil(
+            "cancel must hit the in-flight upload, not preparation",
+            timeout: .seconds(5)
+        ) {
+            await gate.entryCount == 1
+        }
         let tokens = fixture.store.pendingDropPlaceholders
         #expect(tokens.count == 2)
         #expect(fixture.store.draft == tokens[0] + tokens[1])
@@ -1470,6 +1476,14 @@ struct AgentComposerStoreTests {
             timeout: .seconds(5)
         ) {
             fixture.staging.state.isBusy
+        }
+        try await waitUntil(
+            "A must be in the upload gate before teardown, or B is not yet excluded",
+            timeout: .seconds(5)
+        ) {
+            let entries = await gate.entryCount
+            let loaded = await fixture.preparer.loadedSelections()
+            return entries == 1 && loaded.count == 1
         }
         #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
 
