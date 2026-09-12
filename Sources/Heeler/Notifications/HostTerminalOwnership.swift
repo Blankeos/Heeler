@@ -1,0 +1,110 @@
+import Foundation
+
+/// What one window's Agent detail may do with its Host's terminal channel.
+enum HostTerminalAccess: Equatable, Sendable {
+    /// This window holds the channel, or nothing else wants it.
+    case holds
+    /// Another window of the app holds it. `canTakeOver` is false while that
+    /// window shows a Shell Terminal, which has no rejoin path to hand over.
+    case liveInAnotherWindow(canTakeOver: Bool)
+}
+
+/// One window's claim on a Host's terminal channel: the Agent detail it has
+/// on screen, on that Agent's Host.
+struct HostTerminalClaim: Equatable, Sendable {
+    let sceneID: UUID
+    let hostID: Host.ID
+    /// The window shows a Shell Terminal (or is opening one) for its Agent
+    /// rather than the Agent's Attach.
+    let isShellTerminal: Bool
+}
+
+/// Which window holds each Host's single terminal channel (ADR 0011, ADR
+/// 0015), as a pure decision over the windows' claims.
+///
+/// A Host keeps one terminal channel however many windows show its Agents,
+/// so with two windows on one Host only one can be live. The rule:
+///
+/// - A window that becomes key, or a key window that turns to a Host, takes
+///   that Host's channel: the window the user is working in is the live one.
+/// - Otherwise the holder keeps it, so a background window navigating never
+///   pulls the channel out from under the key window.
+/// - An explicit takeover moves it at once and holds until the next such key
+///   edge.
+/// - A Host whose holder stops claiming it passes to the key window if that
+///   window claims it, else to the first-connected window that does.
+/// - A holder showing a Shell Terminal is never handed away.
+///
+/// Hosts claimed by one window only are unaffected: that window holds.
+struct HostTerminalOwnership: Equatable, Sendable {
+    private(set) var holders: [Host.ID: UUID] = [:]
+    /// The key window and the Host it claimed at the previous reconcile; a
+    /// change to either is the key edge that hands a channel over.
+    private var lastKeySceneID: UUID?
+    private var lastKeyHostID: Host.ID?
+
+    init() {}
+
+    /// Re-derives every Host's holder. `claims` is in window connection
+    /// order, at most one per window; `keySceneID` is the most recently
+    /// activated window, claiming or not.
+    mutating func reconcile(claims: [HostTerminalClaim], keySceneID: UUID?) {
+        let keyClaim = claims.first { $0.sceneID == keySceneID }
+        let isKeyEdge =
+            keyClaim != nil
+            && (keySceneID != lastKeySceneID || keyClaim?.hostID != lastKeyHostID)
+        lastKeySceneID = keySceneID
+        lastKeyHostID = keyClaim?.hostID
+
+        var next: [Host.ID: UUID] = [:]
+        for claim in claims where next[claim.hostID] == nil {
+            let hostID = claim.hostID
+            let current = holders[hostID].flatMap { holder in
+                claims.first { $0.sceneID == holder && $0.hostID == hostID }
+            }
+            if let keyClaim, keyClaim.hostID == hostID, isKeyEdge,
+                current?.isShellTerminal != true
+            {
+                next[hostID] = keyClaim.sceneID
+            } else if let current {
+                next[hostID] = current.sceneID
+            } else if let keyClaim, keyClaim.hostID == hostID {
+                next[hostID] = keyClaim.sceneID
+            } else {
+                next[hostID] = claim.sceneID
+            }
+        }
+        holders = next
+    }
+
+    /// Moves `hostID`'s channel to `sceneID` on the user's explicit request.
+    /// False when that window does not claim the Host or the holder shows a
+    /// Shell Terminal.
+    @discardableResult
+    mutating func takeOver(
+        hostID: Host.ID, sceneID: UUID, claims: [HostTerminalClaim]
+    ) -> Bool {
+        guard claims.contains(where: { $0.sceneID == sceneID && $0.hostID == hostID })
+        else { return false }
+        if let holder = holders[hostID], holder != sceneID,
+            claims.contains(where: {
+                $0.sceneID == holder && $0.hostID == hostID && $0.isShellTerminal
+            })
+        {
+            return false
+        }
+        holders[hostID] = sceneID
+        return true
+    }
+
+    func access(
+        sceneID: UUID, hostID: Host.ID, claims: [HostTerminalClaim]
+    ) -> HostTerminalAccess {
+        guard let holder = holders[hostID], holder != sceneID,
+            let holderClaim = claims.first(where: {
+                $0.sceneID == holder && $0.hostID == hostID
+            })
+        else { return .holds }
+        return .liveInAnotherWindow(canTakeOver: !holderClaim.isShellTerminal)
+    }
+}

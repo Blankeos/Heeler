@@ -70,6 +70,33 @@ final class WindowReference {
         storage = window
         attachments &+= 1
     }
+
+    /// Calls `handler` each time this window becomes the key window. Under
+    /// Stage Manager several windows stay foreground-active at once, so the
+    /// scene phase does not change when the user moves between them; the key
+    /// window does. One handler per reference; a later call replaces it.
+    func observeBecomingKey(
+        notificationCenter: NotificationCenter = .default,
+        _ handler: @escaping @MainActor () -> Void
+    ) {
+        becameKeyHandler = handler
+        guard keyObserver == nil else { return }
+        keyObserver = notificationCenter.addObserver(
+            forName: UIWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            // Notification is not Sendable; the window's identity is.
+            let windowID = (notification.object as? UIWindow).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, let windowID,
+                    self.storage.map(ObjectIdentifier.init) == windowID
+                else { return }
+                self.becameKeyHandler?()
+            }
+        }
+    }
+
+    @ObservationIgnored private var becameKeyHandler: (@MainActor () -> Void)?
+    @ObservationIgnored private var keyObserver: (any NSObjectProtocol)?
 }
 
 extension EnvironmentValues {

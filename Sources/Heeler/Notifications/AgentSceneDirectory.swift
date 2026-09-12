@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftUI
 
 /// What the deep-link policy needs to know about one connected window.
@@ -75,21 +76,33 @@ enum AgentDeepLinkPolicy {
 /// enter. Each window owns its own `AgentNotificationRouter`; this directory
 /// decides which of those routers a link drives, through
 /// `AgentDeepLinkPolicy`, and brings that window forward.
+///
+/// It also decides which window holds each Host's single terminal channel,
+/// through `HostTerminalOwnership`. Windows read their access from here; the
+/// one that loses the channel releases its Attach and the one that gains it
+/// rejoins, both through the Attach store's existing leave and rejoin.
 @MainActor
+@Observable
 final class AgentSceneDirectory {
     private struct Entry {
         let router: AgentNotificationRouter
         let activate: @MainActor () -> Void
         var activationOrder: UInt64 = 0
+        /// The Agent whose detail shows a Shell Terminal in this window.
+        var shellTerminalAgent: ConsoleAgent.ID?
     }
 
-    private var entries: [UUID: Entry] = [:]
+    @ObservationIgnored private var entries: [UUID: Entry] = [:]
     /// Connection order, so iteration and tie-breaks are deterministic.
-    private var order: [UUID] = []
-    private var activationClock: UInt64 = 0
+    @ObservationIgnored private var order: [UUID] = []
+    @ObservationIgnored private var activationClock: UInt64 = 0
     /// A link that arrived before any window connected. The inner optional
     /// is the link itself: nil means "the Console".
-    private var pendingOpen: AgentNotificationTarget??
+    @ObservationIgnored private var pendingOpen: AgentNotificationTarget??
+    /// Observed: each window's Agent detail re-reads its access when either
+    /// changes.
+    private var terminalClaims: [HostTerminalClaim] = []
+    private var terminalOwnership = HostTerminalOwnership()
 
     init() {}
 
@@ -109,20 +122,78 @@ final class AgentSceneDirectory {
         if let pending = pendingOpen {
             pendingOpen = nil
             open(pending, preferredSceneID: sceneID)
+        } else {
+            reconcileTerminalOwnership()
         }
     }
 
     func unregister(sceneID: UUID) {
         entries[sceneID] = nil
         order.removeAll { $0 == sceneID }
+        reconcileTerminalOwnership()
     }
 
-    /// Records that a window became the active one, which makes it the key
-    /// window for links that no window is already showing.
+    /// Records that a window became the key one: the landing spot for links
+    /// no window is already showing, and the window that takes its Host's
+    /// terminal channel.
     func sceneDidBecomeActive(sceneID: UUID) {
         guard entries[sceneID] != nil else { return }
         activationClock &+= 1
         entries[sceneID]?.activationOrder = activationClock
+        reconcileTerminalOwnership()
+    }
+
+    /// A window's navigation or its Agent list changed, so what it claims
+    /// may have too.
+    func sceneRouteDidChange(sceneID: UUID) {
+        guard entries[sceneID] != nil else { return }
+        reconcileTerminalOwnership()
+    }
+
+    /// Whether a window's Agent detail shows a Shell Terminal, and for which
+    /// Agent. A holder showing one keeps its Host's channel.
+    func shellTerminalDidChange(sceneID: UUID, agent: ConsoleAgent.ID?) {
+        guard entries[sceneID] != nil, entries[sceneID]?.shellTerminalAgent != agent
+        else { return }
+        entries[sceneID]?.shellTerminalAgent = agent
+        reconcileTerminalOwnership()
+    }
+
+    func terminalAccess(sceneID: UUID, hostID: Host.ID) -> HostTerminalAccess {
+        terminalOwnership.access(sceneID: sceneID, hostID: hostID, claims: terminalClaims)
+    }
+
+    /// Take Over Here: moves the Host's channel to this window now, instead
+    /// of at its next key edge.
+    func takeOverTerminal(sceneID: UUID, hostID: Host.ID) {
+        reconcileTerminalOwnership()
+        var ownership = terminalOwnership
+        guard ownership.takeOver(hostID: hostID, sceneID: sceneID, claims: terminalClaims)
+        else { return }
+        if ownership != terminalOwnership {
+            terminalOwnership = ownership
+        }
+    }
+
+    private func reconcileTerminalOwnership() {
+        let claims = order.compactMap { id -> HostTerminalClaim? in
+            guard let entry = entries[id], let agent = entry.router.path.last,
+                entry.router.isKnownAgent(agent)
+            else { return nil }
+            return HostTerminalClaim(
+                sceneID: id, hostID: agent.hostID,
+                isShellTerminal: entry.shellTerminalAgent == agent)
+        }
+        var ownership = terminalOwnership
+        ownership.reconcile(claims: claims, keySceneID: AgentDeepLinkPolicy.keyScene(in: scenes))
+        // Assigned only on change, so an unrelated reconcile does not
+        // invalidate every window's detail.
+        if claims != terminalClaims {
+            terminalClaims = claims
+        }
+        if ownership != terminalOwnership {
+            terminalOwnership = ownership
+        }
     }
 
     var scenes: [AgentSceneState] {
@@ -155,6 +226,7 @@ final class AgentSceneDirectory {
             pendingOpen = nil
             guard let entry = entries[sceneID] else { return }
             entry.router.open(target)
+            reconcileTerminalOwnership()
             entry.activate()
         }
     }
@@ -187,6 +259,21 @@ struct AgentSceneRouting: Equatable {
     @MainActor
     func open(_ target: AgentNotificationTarget?) {
         directory.open(target, preferredSceneID: sceneID)
+    }
+
+    @MainActor
+    func terminalAccess(for hostID: Host.ID) -> HostTerminalAccess {
+        directory.terminalAccess(sceneID: sceneID, hostID: hostID)
+    }
+
+    @MainActor
+    func takeOverTerminal(for hostID: Host.ID) {
+        directory.takeOverTerminal(sceneID: sceneID, hostID: hostID)
+    }
+
+    @MainActor
+    func shellTerminalDidChange(agent: ConsoleAgent.ID?) {
+        directory.shellTerminalDidChange(sceneID: sceneID, agent: agent)
     }
 }
 

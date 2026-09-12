@@ -59,7 +59,10 @@ struct ContentView: View {
             app.sceneDirectory.register(
                 sceneID: sceneID, router: notificationRouter,
                 activate: { activateWindow() })
-            if scenePhase == .active {
+            window.observeBecomingKey { [directory = app.sceneDirectory, sceneID] in
+                directory.sceneDidBecomeActive(sceneID: sceneID)
+            }
+            if scenePhase == .active, isKeyWindow {
                 app.sceneDirectory.sceneDidBecomeActive(sceneID: sceneID)
             }
             if let draggedRoute {
@@ -70,8 +73,11 @@ struct ContentView: View {
         .onDisappear {
             app.sceneDirectory.unregister(sceneID: sceneID)
         }
+        // Every window turns active together when the app foregrounds; only
+        // the key one counts as activated. Moving between windows that stay
+        // active arrives through `observeBecomingKey` instead.
         .onChange(of: scenePhase) {
-            if scenePhase == .active {
+            if scenePhase == .active, isKeyWindow {
                 app.sceneDirectory.sceneDidBecomeActive(sceneID: sceneID)
             }
         }
@@ -80,6 +86,7 @@ struct ContentView: View {
         // launch) routes the moment its pane appears.
         .onChange(of: app.console.agents, initial: true) {
             notificationRouter.agentsDidChange(app.console.agents)
+            app.sceneDirectory.sceneRouteDidChange(sceneID: sceneID)
         }
         // Every navigation is written back, so a relaunch restores the Agent
         // this window was last on.
@@ -89,6 +96,7 @@ struct ContentView: View {
             if windowRoute != route {
                 windowRoute = route
             }
+            app.sceneDirectory.sceneRouteDidChange(sceneID: sceneID)
         }
         // Live Activity row links name an Agent; surrounding chrome,
         // compact, and minimal presentations name only the Host and land on
@@ -116,6 +124,12 @@ struct ContentView: View {
     }
 
     private static let linkEventPrefix = "\(AgentActivityLink.scheme)://"
+
+    /// True before the window is known, so the first window of a launch still
+    /// counts as activated.
+    private var isKeyWindow: Bool {
+        window.window?.isKeyWindow ?? true
+    }
 
     /// Applies the restoration precedence once, on the window's first
     /// appearance. A stored or window-value route is placed on the path

@@ -233,10 +233,14 @@ struct ConsoleView: View {
                     keyboardInset: keyboardInset,
                     // The router's truth, not SwiftUI's appear/disappear:
                     // only the screen still selected may rebuild its
-                    // terminal on a spurious reappearance.
-                    isOnStage: { [notificationRouter] in
+                    // terminal on a spurious reappearance. A window whose
+                    // Host channel is live in another window is off stage
+                    // for the terminal too.
+                    isOnStage: { [notificationRouter, sceneRouting] in
                         notificationRouter.path.last == id
                             && console.agents.contains(where: { $0.id == id })
+                            && (sceneRouting?.terminalAccess(for: id.hostID) ?? .holds)
+                                == .holds
                     },
                     onSwitch: { notificationRouter.path = [$0] },
                     onClosed: { notificationRouter.path = [] }

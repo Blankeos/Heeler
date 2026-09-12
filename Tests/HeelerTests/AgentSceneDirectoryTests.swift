@@ -217,4 +217,124 @@ struct AgentSceneDirectoryTests {
         #expect(closedRouter.path.isEmpty)
         #expect(openRouter.path == [target("w1:p1").agentID])
     }
+
+    // MARK: Same-Host terminal handoff
+
+    /// Two windows on two Agents of one Host, each registered and on its
+    /// Agent, the second window key.
+    private func makeSharedHostWindows(
+        _ directory: AgentSceneDirectory
+    ) -> (first: UUID, second: UUID) {
+        let first = UUID()
+        let second = UUID()
+        let firstRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        let secondRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        directory.register(sceneID: first, router: firstRouter, activate: {})
+        directory.register(sceneID: second, router: secondRouter, activate: {})
+        firstRouter.path = [target("w1:p1").agentID]
+        directory.sceneRouteDidChange(sceneID: first)
+        directory.sceneDidBecomeActive(sceneID: first)
+        secondRouter.path = [target("w1:p2").agentID]
+        directory.sceneRouteDidChange(sceneID: second)
+        directory.sceneDidBecomeActive(sceneID: second)
+        return (first, second)
+    }
+
+    @Test func aSharedHostIsLiveOnlyInTheKeyWindow() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+
+        #expect(directory.terminalAccess(sceneID: second, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+
+        directory.sceneDidBecomeActive(sceneID: first)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: second, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+    }
+
+    @Test func takeOverHandsTheChannelToTheTappedWindow() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+        let routing = AgentSceneRouting(directory: directory, sceneID: first)
+
+        routing.takeOverTerminal(for: hostID)
+
+        #expect(routing.terminalAccess(for: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: second, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+    }
+
+    @Test func closingTheHoldingWindowHandsItsHostOn() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+
+        directory.unregister(sceneID: second)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
+    }
+
+    @Test func aShellTerminalKeepsItsWindowLive() {
+        let directory = AgentSceneDirectory()
+        let (first, second) = makeSharedHostWindows(directory)
+        directory.shellTerminalDidChange(sceneID: second, agent: target("w1:p2").agentID)
+
+        directory.sceneDidBecomeActive(sceneID: first)
+        directory.takeOverTerminal(sceneID: first, hostID: hostID)
+
+        #expect(directory.terminalAccess(sceneID: second, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: false))
+    }
+
+    /// A deep link that lands an Agent of the shared Host in the key window
+    /// makes that window live, like navigating there by hand.
+    @Test func aDeepLinkIntoTheKeyWindowTakesTheHost() {
+        let directory = AgentSceneDirectory()
+        let first = UUID()
+        let second = UUID()
+        let firstRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        let secondRouter = makeRouter(knowing: ["w1:p1", "w1:p2"])
+        directory.register(sceneID: first, router: firstRouter, activate: {})
+        directory.register(sceneID: second, router: secondRouter, activate: {})
+        firstRouter.path = [target("w1:p1").agentID]
+        directory.sceneRouteDidChange(sceneID: first)
+        directory.sceneDidBecomeActive(sceneID: first)
+        directory.sceneDidBecomeActive(sceneID: second)
+
+        directory.open(target("w1:p2"))
+
+        #expect(secondRouter.path == [target("w1:p2").agentID])
+        #expect(directory.terminalAccess(sceneID: second, hostID: hostID) == .holds)
+        #expect(
+            directory.terminalAccess(sceneID: first, hostID: hostID)
+                == .liveInAnotherWindow(canTakeOver: true))
+    }
+
+    /// A window on an Agent the Console no longer lists has no terminal to
+    /// run, so it takes nothing from the window that does.
+    @Test func anUnlistedAgentClaimsNoChannel() {
+        let directory = AgentSceneDirectory()
+        let first = UUID()
+        let second = UUID()
+        let firstRouter = makeRouter(knowing: ["w1:p1"])
+        let secondRouter = makeRouter(knowing: ["w1:p1"])
+        directory.register(sceneID: first, router: firstRouter, activate: {})
+        directory.register(sceneID: second, router: secondRouter, activate: {})
+        firstRouter.path = [target("w1:p1").agentID]
+        directory.sceneRouteDidChange(sceneID: first)
+        directory.sceneDidBecomeActive(sceneID: first)
+
+        secondRouter.path = [target("w1:gone").agentID]
+        directory.sceneRouteDidChange(sceneID: second)
+        directory.sceneDidBecomeActive(sceneID: second)
+
+        #expect(directory.terminalAccess(sceneID: first, hostID: hostID) == .holds)
+    }
 }

@@ -17,6 +17,12 @@ final class AgentNotificationRouter {
     /// A tap still waiting for its pane to appear in the Console.
     private(set) var pendingTarget: AgentNotificationTarget?
 
+    /// Whether the Console's latest Agent list has this row, as last fed
+    /// through `agentsDidChange`.
+    func isKnownAgent(_ id: ConsoleAgent.ID) -> Bool {
+        knownAgentIDs.contains(id)
+    }
+
     @ObservationIgnored private var knownAgentIDs: Set<ConsoleAgent.ID> = []
     @ObservationIgnored private var pendingExpiry: Task<Void, Never>?
     @ObservationIgnored private let pendingGrace: Duration

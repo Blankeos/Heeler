@@ -242,6 +242,9 @@ struct AgentTerminalView: View {
     @Environment(\.sceneWindow) private var sceneWindow
     /// This view's own window, for hosts without a scene root.
     @State private var mountedWindow = WindowReference()
+    /// Nil outside a scene root, where this screen always holds its Host's
+    /// terminal channel.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     private var isDirectInput: Bool { inputMode.isDirect }
 
@@ -1431,7 +1434,25 @@ struct AgentTerminalView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
+        if let away = LiveInAnotherWindowPresentation(
+            access: sceneRouting?.terminalAccess(for: agent.hostID) ?? .holds)
+        {
+            // Ahead of the terminal status: this window released its Attach
+            // on purpose, so its stopped terminal says nothing useful.
+            TerminalStatusDialog(
+                glyph: .symbol(away.systemImage),
+                title: away.title,
+                message: away.message,
+                palette: themePalette
+            ) {
+                if away.showsTakeOver {
+                    Button(LiveInAnotherWindowPresentation.takeOverTitle) {
+                        sceneRouting?.takeOverTerminal(for: agent.hostID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        } else if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
             switch presentation.kind {
             case .connecting:
                 // No dim: a reattach would otherwise flash the whole screen dark.
