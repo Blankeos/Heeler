@@ -436,11 +436,13 @@ struct AgentTerminalView: View {
         .modifier(ConsoleTerminalCommandRegistration(
             agentID: agent.id,
             isFocused: keyboardControl.isFirstResponder,
-            isAvailable: !isSelectingPhoto && !isSelectingFile && !isConfirmingClose
-                && !isStartingAgent && !isManagingSnippets && !isShowingSkillsPicker
-                && !isRenamingAgent && viewingSkill == nil && !isRenamingWorkspace
-                && !isShowingWorktree && !isShowingAttachLinks && closeErrorMessage == nil,
-            isOnStage: isOnStage,
+            isPresenting: isSelectingPhoto || isSelectingFile || isConfirmingClose
+                || isStartingAgent || isManagingSnippets || isShowingSkillsPicker
+                || isRenamingAgent || viewingSkill != nil || isRenamingWorkspace
+                || isShowingWorktree || isShowingAttachLinks || closeErrorMessage != nil
+                || attach.pendingPaste != nil || attach.pasteErrorMessage != nil
+                || attach.attachLinkOpenFailure != nil,
+            isOnStage: { @MainActor in isOnStage() },
             toggleInputMode: { selectInputMode(inputMode.isDirect ? .composer : .direct) }))
         .task { composer.open() }
     }

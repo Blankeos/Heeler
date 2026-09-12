@@ -10,7 +10,8 @@ final class ConsoleCommandRegistry {
         let token: UUID
         let agentID: ConsoleAgent.ID
         let isFocused: Bool
-        let isAvailable: @MainActor () -> Bool
+        let isPresenting: Bool
+        let isOnStage: @MainActor () -> Bool
         let toggleInputMode: @MainActor () -> Void
     }
 
@@ -81,15 +82,17 @@ struct ConsoleCommandTarget {
     let hosts: @MainActor () -> Void
     let closeAgent: @MainActor () -> Void
 
-    private var activeTerminal: ConsoleCommandRegistry.Terminal? {
+    private func activeTerminal(in context: Context) -> ConsoleCommandRegistry.Terminal? {
         guard let terminal = registry.terminal,
-            terminal.agentID == context().selection, terminal.isAvailable()
+            terminal.agentID == context.selection, terminal.isOnStage()
         else { return nil }
         return terminal
     }
 
-    private var activeComposer: ConsoleCommandRegistry.Composer? {
-        guard let terminal = activeTerminal, let composer = registry.composer,
+    private func activeComposer(
+        for terminal: ConsoleCommandRegistry.Terminal?
+    ) -> ConsoleCommandRegistry.Composer? {
+        guard let terminal, let composer = registry.composer,
             composer.agentID == terminal.agentID, composer.terminalToken == terminal.token
         else { return nil }
         return composer
@@ -97,9 +100,17 @@ struct ConsoleCommandTarget {
 
     func allows(_ action: ConsoleCommandAction) -> Bool {
         let context = context()
-        guard !context.isCovered else { return false }
-        let terminal = activeTerminal
-        let composer = activeComposer
+        return allows(action, in: context, terminal: activeTerminal(in: context))
+    }
+
+    private func allows(
+        _ action: ConsoleCommandAction, in context: Context,
+        terminal: ConsoleCommandRegistry.Terminal?
+    ) -> Bool {
+        // Only the selected, on-stage detail can cover the Console. A stale
+        // registration must neither block navigation nor open a second sheet.
+        guard !context.isCovered, terminal?.isPresenting != true else { return false }
+        let composer = activeComposer(for: terminal)
         // During a responder handoff, a pending Composer blur must not let
         // Send win over an already-focused search field or terminal.
         let focus: ConsoleCommandFocus
@@ -126,10 +137,11 @@ struct ConsoleCommandTarget {
     }
 
     func perform(_ action: ConsoleCommandAction) {
-        guard allows(action) else { return }
+        let context = context()
+        let terminal = activeTerminal(in: context)
+        guard allows(action, in: context, terminal: terminal) else { return }
         switch action {
         case .selectAgent, .previousAgent, .nextAgent:
-            let context = context()
             if let id = ConsoleCommandNavigation.destination(
                 for: action, in: context.agents, selection: context.selection)
             {
@@ -139,16 +151,20 @@ struct ConsoleCommandTarget {
         case .newAgent: newAgent()
         case .settings: settings()
         case .hosts: hosts()
-        case .toggleInputMode: activeTerminal?.toggleInputMode()
+        case .toggleInputMode: terminal?.toggleInputMode()
         case .closeAgent: closeAgent()
         case .sendDraft:
-            guard let composer = activeComposer else { return }
+            guard let composer = activeComposer(for: terminal) else { return }
             Task { await sendDraft(for: composer.token) }
         }
     }
 
     func sendDraft(for token: UUID) async {
-        guard allows(.sendDraft), let composer = activeComposer, composer.token == token else {
+        let context = context()
+        let terminal = activeTerminal(in: context)
+        guard allows(.sendDraft, in: context, terminal: terminal),
+            let composer = activeComposer(for: terminal), composer.token == token
+        else {
             return
         }
         await composer.send()
@@ -159,7 +175,7 @@ struct ConsoleCommandTarget {
 struct ConsoleTerminalCommandRegistration: ViewModifier {
     let agentID: ConsoleAgent.ID
     let isFocused: Bool
-    let isAvailable: Bool
+    let isPresenting: Bool
     let isOnStage: @MainActor () -> Bool
     let toggleInputMode: @MainActor () -> Void
     @Environment(\.consoleCommandRegistry) private var registry
@@ -170,7 +186,7 @@ struct ConsoleTerminalCommandRegistration: ViewModifier {
             .environment(\.consoleCommandTerminalToken, token)
             .onAppear { register() }
             .onChange(of: isFocused) { _, _ in update() }
-            .onChange(of: isAvailable) { _, _ in update() }
+            .onChange(of: isPresenting) { _, _ in update() }
             .onDisappear { registry?.removeTerminal(token) }
     }
 
@@ -180,10 +196,14 @@ struct ConsoleTerminalCommandRegistration: ViewModifier {
     }
 
     private func register() {
+        // Store the supplied actions, never a closure capturing this modifier:
+        // its environment contains the registry that owns the registration.
+        let isOnStage = isOnStage
+        let toggleInputMode = toggleInputMode
         registry?.register(
             ConsoleCommandRegistry.Terminal(
                 token: token, agentID: agentID, isFocused: isFocused,
-                isAvailable: { isAvailable && isOnStage() },
+                isPresenting: isPresenting, isOnStage: isOnStage,
                 toggleInputMode: toggleInputMode))
     }
 }

@@ -106,9 +106,9 @@ struct ConsoleCommandRegistryTests {
 
     private func target(
         registry: ConsoleCommandRegistry,
-        context: @escaping () -> ConsoleCommandTarget.Context,
-        navigate: @escaping (ConsoleAgent.ID) -> Void = { _ in },
-        close: @escaping () -> Void = {}
+        context: @escaping @MainActor () -> ConsoleCommandTarget.Context,
+        navigate: @escaping @MainActor (ConsoleAgent.ID) -> Void = { _ in },
+        close: @escaping @MainActor () -> Void = {}
     ) -> ConsoleCommandTarget {
         ConsoleCommandTarget(
             registry: registry, context: context, navigate: navigate,
@@ -125,13 +125,14 @@ struct ConsoleCommandRegistryTests {
 
     private func registerTerminal(
         _ registry: ConsoleCommandRegistry, token: UUID = UUID(),
-        focused: Bool = false, available: @escaping () -> Bool = { true },
-        toggle: @escaping () -> Void = {}
+        focused: Bool = false, presenting: Bool = false,
+        onStage: @escaping @MainActor () -> Bool = { true },
+        toggle: @escaping @MainActor () -> Void = {}
     ) {
         registry.register(
             ConsoleCommandRegistry.Terminal(
                 token: token, agentID: agent, isFocused: focused,
-                isAvailable: available, toggleInputMode: toggle))
+                isPresenting: presenting, isOnStage: onStage, toggleInputMode: toggle))
     }
 
     @Test func scenesDispatchOnlyTheirOwnActions() {
@@ -157,7 +158,7 @@ struct ConsoleCommandRegistryTests {
         #expect(!commands.allows(.toggleInputMode))
         #expect(!commands.allows(.sendDraft))
         #expect(commands.allows(.closeAgent))
-        registerTerminal(registry, available: { false })
+        registerTerminal(registry, onStage: { false })
         #expect(!commands.allows(.toggleInputMode))
     }
 
@@ -310,5 +311,102 @@ struct ConsoleCommandRegistryTests {
         #expect(commands.allows(.sendDraft))
         registerTerminal(registry)
         #expect(!commands.allows(.sendDraft))
+    }
+
+    @Test func detailPresentationBlocksEveryCommandAndRecovers() async {
+        let registry = ConsoleCommandRegistry()
+        let terminalToken = UUID()
+        let composerToken = UUID()
+        let rows =
+            [agent]
+            + (2...9).map {
+                ConsoleAgent.ID(hostID: agent.hostID, paneID: "pane-\($0)")
+            }
+        var actionCount = 0
+        let didFire: @MainActor () -> Void = { actionCount += 1 }
+        registerTerminal(registry, token: terminalToken, toggle: didFire)
+        registry.register(
+            ConsoleCommandRegistry.Composer(
+                token: composerToken, terminalToken: terminalToken, agentID: agent,
+                isFocused: true, hasDraft: { true }, send: { didFire() }))
+        let commands = ConsoleCommandTarget(
+            registry: registry,
+            context: {
+                .init(
+                    selection: agent, agents: rows, isSearchFocused: false,
+                    isCovered: false, inputMode: .composer)
+            },
+            navigate: { _ in didFire() }, focusSearch: didFire, newAgent: didFire,
+            settings: didFire, hosts: didFire, closeAgent: didFire)
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(commands.allows(shortcut.action))
+        }
+
+        registerTerminal(registry, token: terminalToken, presenting: true, toggle: didFire)
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(!commands.allows(shortcut.action))
+            commands.perform(shortcut.action)
+        }
+        // A Send scheduled before the presentation also stops at the async boundary.
+        await commands.sendDraft(for: composerToken)
+        #expect(actionCount == 0)
+
+        registerTerminal(registry, token: terminalToken, toggle: didFire)
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(commands.allows(shortcut.action))
+        }
+        commands.perform(.newAgent)
+        #expect(actionCount == 1)
+    }
+
+    @Test func staleDetailPresentationDoesNotCoverAnotherSelectionOrShell() {
+        let registry = ConsoleCommandRegistry()
+        var selected: ConsoleAgent.ID? = agent
+        var onStage = true
+        var rootCovered = false
+        registerTerminal(registry, presenting: true, onStage: { onStage })
+        let commands = target(
+            registry: registry,
+            context: { context(selection: selected, covered: rootCovered) })
+        #expect(!commands.allows(.newAgent))
+
+        // The same pane identifier on another Host is a different selection.
+        selected = ConsoleAgent.ID(hostID: UUID(), paneID: agent.paneID)
+        #expect(commands.allows(.newAgent))
+        #expect(commands.allows(.nextAgent))
+        #expect(commands.allows(.closeAgent))
+        selected = nil
+        #expect(commands.allows(.settings))
+
+        // Shell Terminal keeps the Agent selected, but its Attach is off stage.
+        selected = agent
+        onStage = false
+        #expect(commands.allows(.newAgent))
+        #expect(commands.allows(.nextAgent))
+        #expect(!commands.allows(.toggleInputMode))
+        rootCovered = true
+        #expect(!commands.allows(.newAgent))
+    }
+
+    @Test func availabilityProjectsContextOnceWithActiveComposer() {
+        let registry = ConsoleCommandRegistry()
+        let terminalToken = UUID()
+        var contextReads = 0
+        registerTerminal(registry, token: terminalToken)
+        registry.register(
+            ConsoleCommandRegistry.Composer(
+                token: UUID(), terminalToken: terminalToken, agentID: agent,
+                isFocused: true, hasDraft: { true }, send: {}))
+        let commands = target(
+            registry: registry,
+            context: {
+                contextReads += 1
+                return context(selection: agent)
+            })
+        for shortcut in ConsoleCommandShortcut.all {
+            contextReads = 0
+            _ = commands.allows(shortcut.action)
+            #expect(contextReads == 1)
+        }
     }
 }
