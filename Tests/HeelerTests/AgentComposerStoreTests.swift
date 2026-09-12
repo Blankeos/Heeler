@@ -726,10 +726,119 @@ struct AgentComposerStoreTests {
             timeout: .seconds(5)
         ) {
             Self.isCompleted(fixture.staging.state)
+                && fixture.store.draft.contains("/tmp/heeler-drop.jpg")
         }
 
-        #expect(fixture.store.draft == "first second/tmp/heeler-drop.jpg ")
+        #expect(fixture.store.draft == "first /tmp/heeler-drop.jpg second")
+        #expect(fixture.store.messages.isEmpty)
         #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func twoDistinctImagesInOneDropStageInOrder() async throws {
+        let fixture = try Self.makeDropStagingFixture(remotePaths: [
+            "/tmp/heeler-drop-a.jpg",
+            "/tmp/heeler-drop-b.jpg",
+        ])
+        defer { fixture.cleanup() }
+        let secondImage = Data([0xFF, 0xD8, 0xFF, 0x02])
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "a.png"),
+            .image(secondImage, suggestedName: "b.png"),
+        ])
+
+        try await waitUntil(
+            "both dropped images should stage in order",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft == "/tmp/heeler-drop-a.jpg /tmp/heeler-drop-b.jpg "
+        }
+
+        #expect(fixture.store.draft == "/tmp/heeler-drop-a.jpg /tmp/heeler-drop-b.jpg ")
+        #expect(fixture.store.messages.isEmpty)
+        #expect(
+            await fixture.preparer.loadedSelections()
+                == [fixture.droppedImageData, secondImage])
+    }
+
+    @Test func imageDropWhileStagingIsBusyIsQueuedAndStaged() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(
+            remotePaths: [
+                "/tmp/heeler-drop-a.jpg",
+                "/tmp/heeler-drop-b.jpg",
+            ],
+            stageGate: gate)
+        defer { fixture.cleanup() }
+        let secondImage = Data([0xFF, 0xD8, 0xFF, 0x02])
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "a.png")
+        ])
+        try await waitUntil(
+            "the first dropped image should occupy staging",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+
+        fixture.store.acceptDrop([
+            .image(secondImage, suggestedName: "b.png")
+        ])
+        #expect(fixture.store.draft.isEmpty)
+        #expect(fixture.store.messages.isEmpty)
+
+        await gate.open()
+        try await waitUntil(
+            "the queued drop should stage after the in-flight upload",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft == "/tmp/heeler-drop-a.jpg /tmp/heeler-drop-b.jpg "
+        }
+
+        #expect(fixture.store.draft == "/tmp/heeler-drop-a.jpg /tmp/heeler-drop-b.jpg ")
+        #expect(fixture.store.messages.isEmpty)
+        #expect(
+            await fixture.preparer.loadedSelections()
+                == [fixture.droppedImageData, secondImage])
+    }
+
+    @Test func completedImagePathStaysAtReservedLocationAfterEdits() async throws {
+        let gate = ScriptedTransportCallGate()
+        let fixture = try Self.makeDropStagingFixture(stageGate: gate)
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "ab")
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+        try await waitUntil(
+            "staging should hold the dropped image",
+            timeout: .seconds(5)
+        ) {
+            fixture.staging.state.isBusy
+        }
+
+        fixture.store.setDraftSelection(NSRange(location: 0, length: 0))
+        fixture.store.insertIntoDraft(">>")
+        fixture.store.applyEditorDraft(
+            "x>>ab",
+            selection: NSRange(location: 1, length: 0))
+        #expect(fixture.store.draft == "x>>ab")
+
+        await gate.open()
+        try await waitUntil(
+            "the path should fill the reserved slot, not the live caret",
+            timeout: .seconds(5)
+        ) {
+            fixture.store.draft == "x>>ab/tmp/heeler-drop.jpg "
+        }
+
+        #expect(fixture.store.draft == "x>>ab/tmp/heeler-drop.jpg ")
+        #expect(fixture.store.draftSelection == NSRange(location: 1, length: 0))
+        #expect(fixture.store.messages.isEmpty)
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
     }
 
     @Test func emptyAndUnsupportedDropsDoNotMutateTheDraft() async throws {
@@ -795,30 +904,26 @@ struct AgentComposerStoreTests {
         if case .completed = state { true } else { false }
     }
 
-    private static func makeDropStagingFixture() throws -> ComposerDropStagingFixture {
+    private static func makeDropStagingFixture(
+        remotePaths: [String] = ["/tmp/heeler-drop.jpg"],
+        stageGate: ScriptedTransportCallGate? = nil
+    ) throws -> ComposerDropStagingFixture {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "heeler-drop-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         let droppedImageData = Data([0xFF, 0xD8, 0xFF, 0x01])
-        let fileURL = directory.appendingPathComponent("prepared.jpg")
-        try droppedImageData.write(to: fileURL)
-        let prepared = PreparedImage(
-            fileURL: fileURL,
-            format: .jpeg,
-            pixelWidth: 1,
-            pixelHeight: 1,
-            byteCount: Int64(droppedImageData.count))
-        let preparer = RecordingDropImagePreparer(prepared: prepared)
+        let preparer = RecordingDropImagePreparer(directory: directory)
         let transport = ScriptedTransport()
         let store = AgentComposerStore(target: "w1:p1") { params in
             try await transport.promptAgent(params)
         }
+        let paths = DropStagePathQueue(paths: remotePaths, gate: stageGate)
         let staging = ComposerStagingStore(
             imagePreparer: preparer,
             filePreparer: UnusedDropFilePreparer(),
-            stageImage: { _, _ in try StagedImage(path: "/tmp/heeler-drop.jpg") },
+            stageImage: { _, _ in try await paths.nextImage() },
             stageFile: { _, _ in try StagedFile(path: "/tmp/heeler-drop.txt") },
             clipboard: SilentDropClipboard(),
             composer: store)
@@ -840,7 +945,7 @@ struct AgentComposerStoreTests {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if await condition() { return }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(5))
         }
         #expect(await condition(), comment)
     }
@@ -877,19 +982,47 @@ private struct ComposerDropStagingFixture {
 }
 
 private actor RecordingDropImagePreparer: ImagePreparing {
-    let prepared: PreparedImage
+    private let directory: URL
     private var selections: [Data] = []
 
-    init(prepared: PreparedImage) {
-        self.prepared = prepared
+    init(directory: URL) {
+        self.directory = directory
     }
 
     func prepare(_ selection: any ImageSelection) async throws -> PreparedImage {
-        selections.append(try await selection.loadData())
-        return prepared
+        let data = try await selection.loadData()
+        selections.append(data)
+        let fileURL = directory.appendingPathComponent("\(UUID().uuidString).jpg")
+        try data.write(to: fileURL)
+        return PreparedImage(
+            fileURL: fileURL,
+            format: .jpeg,
+            pixelWidth: 1,
+            pixelHeight: 1,
+            byteCount: Int64(data.count))
     }
 
     func loadedSelections() -> [Data] { selections }
+}
+
+private actor DropStagePathQueue {
+    private let paths: [String]
+    private let gate: ScriptedTransportCallGate?
+    private var index = 0
+
+    init(paths: [String], gate: ScriptedTransportCallGate?) {
+        self.paths = paths
+        self.gate = gate
+    }
+
+    func nextImage() async throws -> StagedImage {
+        if let gate {
+            await gate.waitUntilOpen()
+        }
+        let path = paths[min(index, max(paths.count - 1, 0))]
+        index += 1
+        return try StagedImage(path: path)
+    }
 }
 
 private actor UnusedDropFilePreparer: FilePreparing {
