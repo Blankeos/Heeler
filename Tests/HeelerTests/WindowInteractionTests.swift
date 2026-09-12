@@ -25,25 +25,40 @@ struct WindowInteractionTests {
         #expect(!recognizer.canBePrevented(by: UITapGestureRecognizer()))
     }
 
+    /// UIKit ignores state changes on a recognizer that is on no view, so
+    /// each is driven installed on a window, as `WindowReader` installs it.
+    private func installedRecognizer(
+        _ onInteraction: @escaping @MainActor () -> Void
+    ) -> (UIWindow, WindowInteractionRecognizer) {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 400))
+        let recognizer = WindowInteractionRecognizer(onInteraction: onInteraction)
+        window.addGestureRecognizer(recognizer)
+        return (window, recognizer)
+    }
+
     @Test func aTouchReportsAndFailsAtOnce() {
         var interactions = 0
-        let recognizer = WindowInteractionRecognizer { interactions += 1 }
+        let (window, recognizer) = installedRecognizer { interactions += 1 }
 
         recognizer.touchesBegan([], with: UIEvent())
 
         #expect(interactions == 1)
         #expect(recognizer.state == .failed)
+        // Also keeps the window, and so the recognizer's view, alive to here.
+        #expect(recognizer.view === window)
     }
 
     /// A hardware keyboard works in a window without touching it.
     @Test func aKeyPressReportsAndFailsAtOnce() {
         var interactions = 0
-        let recognizer = WindowInteractionRecognizer { interactions += 1 }
+        let (window, recognizer) = installedRecognizer { interactions += 1 }
 
         recognizer.pressesBegan([], with: UIPressesEvent())
 
         #expect(interactions == 1)
         #expect(recognizer.state == .failed)
+        // Also keeps the window, and so the recognizer's view, alive to here.
+        #expect(recognizer.view === window)
     }
 
     /// The scene root asks for interaction before `WindowReader` has seen
