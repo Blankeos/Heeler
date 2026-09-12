@@ -138,6 +138,7 @@ final class AgentAttachStore {
             stageImage: stageImage,
             stageFile: stageFile,
             composer: composer)
+        (composer as? AgentComposerStore)?.bindStaging(staging)
         close = ClosePaneStore(paneTitle: paneTitle, close: closePane)
     }
 

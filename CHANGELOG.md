@@ -7,6 +7,10 @@ Entries reference the issue that motivated them.
 
 ## [Unreleased]
 
+### Added
+
+- Drag text and images into the Composer on iPad.
+
 ## [0.1.7] - 2026-09-12
 
 ### Added

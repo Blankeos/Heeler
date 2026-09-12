@@ -52,6 +52,8 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     private(set) var messages: [Message] = []
     private(set) var draft = ""
+    /// UTF-16 caret/selection, matching the Composer text view.
+    private(set) var draftSelection = NSRange(location: 0, length: 0)
 
     private let target: String
     private var agentStatus: AgentStatus
@@ -64,6 +66,10 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// one Attach pipeline (reconnect replacement), and a dead writer must
     /// fail the Blocked path rather than retain a stale session.
     @ObservationIgnored private weak var attachInput: TerminalInputController?
+    /// ADR 0006 picker path. Weak through the bind so staging can keep the
+    /// Composer as its draft owner without a retain cycle.
+    @ObservationIgnored private var beginDroppedAttachment:
+        ((ComposerStagingStore.Source) -> Void)?
 
     init(
         target: String,
@@ -87,10 +93,60 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     func replaceDraft(with text: String) {
         draft = text
+        draftSelection = NSRange(location: (text as NSString).length, length: 0)
     }
 
+    /// Inserts at the current caret, or replaces the current selection. This
+    /// is the Snippet / Skill / staged-path insertion path: the draft changes
+    /// and nothing is submitted.
     func insertIntoDraft(_ text: String) {
-        draft.append(text)
+        let nsDraft = draft as NSString
+        let range = Self.clamped(draftSelection, to: draft)
+        draft = nsDraft.replacingCharacters(in: range, with: text)
+        draftSelection = NSRange(
+            location: range.location + (text as NSString).length,
+            length: 0)
+    }
+
+    func setDraftSelection(_ range: NSRange) {
+        let clamped = Self.clamped(range, to: draft)
+        guard draftSelection != clamped else { return }
+        draftSelection = clamped
+    }
+
+    /// Typing and selection changes from the Composer text view. Unlike
+    /// ``replaceDraft(with:)``, this keeps the view's caret.
+    func applyEditorDraft(_ text: String, selection: NSRange) {
+        let clamped = Self.clamped(selection, to: text)
+        guard draft != text || draftSelection != clamped else { return }
+        draft = text
+        draftSelection = clamped
+    }
+
+    /// Forwards dropped images onto ``ComposerStagingStore.begin(_:)``, the
+    /// same call the photo picker uses.
+    func bindStaging(_ staging: ComposerStagingStore) {
+        beginDroppedAttachment = { [weak staging] source in
+            staging?.begin(source)
+        }
+    }
+
+    /// Maps a drop onto draft insertion and/or the ADR 0006 staging path.
+    /// Empty and unsupported items are skipped without touching the draft or
+    /// submitting it. Mixed payloads are applied in order.
+    func acceptDrop(_ items: [ComposerDropItem]) {
+        for item in items {
+            switch item {
+            case .text(let text):
+                guard !text.isEmpty else { continue }
+                insertIntoDraft(text)
+            case .image(let data, _):
+                guard !data.isEmpty else { continue }
+                beginDroppedAttachment?(.photo(DataImageSelection(data: data)))
+            case .unsupported:
+                continue
+            }
+        }
     }
 
     /// Completes an inline Skill suggestion: swaps the typed trigger token at
@@ -101,6 +157,7 @@ final class AgentComposerStore: ComposerDraftOperations {
         guard !token.isEmpty, draft.hasSuffix(token) else { return }
         draft.removeLast(token.count)
         draft.append(text)
+        draftSelection = NSRange(location: (draft as NSString).length, length: 0)
     }
 
     /// Starts consuming Console's existing per-Agent status fan-out. This
@@ -281,6 +338,17 @@ final class AgentComposerStore: ComposerDraftOperations {
         "The message could not be sent. Check the connection and retry."
     private static let unsafeTextMessage =
         "The message contains unsafe terminal control characters."
+
+    private static func clamped(_ range: NSRange, to text: String) -> NSRange {
+        let length = (text as NSString).length
+        guard range.location != NSNotFound else {
+            return NSRange(location: length, length: 0)
+        }
+        let location = min(max(range.location, 0), length)
+        let remaining = length - location
+        let clampedLength = min(max(range.length, 0), remaining)
+        return NSRange(location: location, length: clampedLength)
+    }
 
     static func message(for error: any Error) -> String {
         switch error {

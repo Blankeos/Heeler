@@ -639,10 +639,197 @@ struct AgentComposerStoreTests {
         #expect(input.userMessageIndex.entries.isEmpty)
     }
 
+    @Test func textDropInsertsAtTheCaretWithoutSubmitting() async {
+        let transport = ScriptedTransport()
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "Hello World")
+        store.setDraftSelection(NSRange(location: 6, length: 0))
+
+        store.acceptDrop([.text("there ")])
+
+        #expect(store.draft == "Hello there World")
+        #expect(store.draftSelection == NSRange(location: 12, length: 0))
+        #expect(store.messages.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func textDropReplacesTheCurrentSelectionWithoutSubmitting() async {
+        let transport = ScriptedTransport()
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "Hello World")
+        store.setDraftSelection(NSRange(location: 6, length: 5))
+
+        store.acceptDrop([.text("iPad")])
+
+        #expect(store.draft == "Hello iPad")
+        #expect(store.messages.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func snippetInsertPathPutsTextAtTheCaretWithoutSending() async {
+        let transport = ScriptedTransport()
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "ab")
+        store.setDraftSelection(NSRange(location: 1, length: 0))
+
+        store.insertIntoDraft("X")
+
+        #expect(store.draft == "aXb")
+        #expect(store.messages.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func imageDropStagesThroughComposerStagingBegin() async throws {
+        let fixture = try Self.makeDropStagingFixture()
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "See ")
+
+        fixture.store.acceptDrop([
+            .image(fixture.droppedImageData, suggestedName: "shot.png")
+        ])
+
+        try await waitUntil(
+            "the dropped image should follow the picker staging path",
+            timeout: .seconds(5)
+        ) {
+            Self.isCompleted(fixture.staging.state)
+        }
+
+        #expect(fixture.store.draft == "See /tmp/heeler-drop.jpg ")
+        #expect(fixture.store.messages.isEmpty)
+        #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
+        #expect(await fixture.transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func mixedDropAppliesItemsInOrder() async throws {
+        let fixture = try Self.makeDropStagingFixture()
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "")
+
+        fixture.store.acceptDrop([
+            .text("first "),
+            .image(fixture.droppedImageData, suggestedName: "shot.png"),
+            .text("second"),
+        ])
+
+        #expect(fixture.store.draft == "first second")
+        #expect(fixture.store.messages.isEmpty)
+
+        try await waitUntil(
+            "the image in a mixed drop should still stage",
+            timeout: .seconds(5)
+        ) {
+            Self.isCompleted(fixture.staging.state)
+        }
+
+        #expect(fixture.store.draft == "first second/tmp/heeler-drop.jpg ")
+        #expect(await fixture.preparer.loadedSelections() == [fixture.droppedImageData])
+    }
+
+    @Test func emptyAndUnsupportedDropsDoNotMutateTheDraft() async throws {
+        let fixture = try Self.makeDropStagingFixture()
+        defer { fixture.cleanup() }
+        fixture.store.replaceDraft(with: "Keep me")
+        let selection = fixture.store.draftSelection
+
+        fixture.store.acceptDrop([
+            .text(""),
+            .unsupported,
+            .image(Data(), suggestedName: "empty.png"),
+        ])
+
+        #expect(fixture.store.draft == "Keep me")
+        #expect(fixture.store.draftSelection == selection)
+        #expect(fixture.store.messages.isEmpty)
+        #expect(fixture.staging.state == .idle)
+        #expect(await fixture.preparer.loadedSelections().isEmpty)
+    }
+
+    @Test func attachStoreBindsDroppedImagesOntoStagingBegin() {
+        let store = Self.draftOnlyStore()
+        let attach = AgentAttachStore(
+            target: "w1:p1",
+            paneTitle: "pane",
+            transportGeneration: nil,
+            isOnStage: { true },
+            runTerminal: { _, _ in },
+            stageImage: { _, _ in try StagedImage(path: "/tmp/heeler-drop.jpg") },
+            stageFile: { _, _ in try StagedFile(path: "/tmp/heeler-drop.txt") },
+            composer: store,
+            closePane: {})
+
+        store.acceptDrop([.image(Data([0x01]), suggestedName: "x.png")])
+
+        #expect(attach.staging.state != .idle)
+        #expect(store.messages.isEmpty)
+    }
+
+    @Test func emptyPayloadsMapToUnsupported() {
+        #expect(ComposerDropItem.textDrop("") == .unsupported)
+        #expect(ComposerDropItem.imageDrop(Data(), suggestedName: "x.png") == .unsupported)
+        #expect(ComposerDropItem.textDrop("keep") == .text("keep"))
+    }
+
+    @Test func targetedHighlightIsStrongerThanIdle() {
+        let idle = ComposerDropHighlight(isTargeted: false)
+        let targeted = ComposerDropHighlight(isTargeted: true)
+        #expect(targeted.strokeWidth > idle.strokeWidth)
+        #expect(targeted.fillOpacity > idle.fillOpacity)
+        #expect(targeted.usesAccentStroke)
+        #expect(!idle.usesAccentStroke)
+    }
+
     private static func draftOnlyStore() -> AgentComposerStore {
         AgentComposerStore(target: "w1:p1") { _ in
             throw TransportError.timedOut
         }
+    }
+
+    private static func isCompleted(_ state: ComposerStagingStore.State) -> Bool {
+        if case .completed = state { true } else { false }
+    }
+
+    private static func makeDropStagingFixture() throws -> ComposerDropStagingFixture {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "heeler-drop-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        let droppedImageData = Data([0xFF, 0xD8, 0xFF, 0x01])
+        let fileURL = directory.appendingPathComponent("prepared.jpg")
+        try droppedImageData.write(to: fileURL)
+        let prepared = PreparedImage(
+            fileURL: fileURL,
+            format: .jpeg,
+            pixelWidth: 1,
+            pixelHeight: 1,
+            byteCount: Int64(droppedImageData.count))
+        let preparer = RecordingDropImagePreparer(prepared: prepared)
+        let transport = ScriptedTransport()
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        let staging = ComposerStagingStore(
+            imagePreparer: preparer,
+            filePreparer: UnusedDropFilePreparer(),
+            stageImage: { _, _ in try StagedImage(path: "/tmp/heeler-drop.jpg") },
+            stageFile: { _, _ in try StagedFile(path: "/tmp/heeler-drop.txt") },
+            clipboard: SilentDropClipboard(),
+            composer: store)
+        store.bindStaging(staging)
+        return ComposerDropStagingFixture(
+            store: store,
+            staging: staging,
+            preparer: preparer,
+            transport: transport,
+            droppedImageData: droppedImageData,
+            directory: directory)
     }
 
     private func waitUntil(
@@ -674,6 +861,46 @@ struct AgentComposerStoreTests {
                 checkoutPath: "/work/Project",
                 isLinkedWorktree: false))
     }
+}
+
+private struct ComposerDropStagingFixture {
+    let store: AgentComposerStore
+    let staging: ComposerStagingStore
+    let preparer: RecordingDropImagePreparer
+    let transport: ScriptedTransport
+    let droppedImageData: Data
+    let directory: URL
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private actor RecordingDropImagePreparer: ImagePreparing {
+    let prepared: PreparedImage
+    private var selections: [Data] = []
+
+    init(prepared: PreparedImage) {
+        self.prepared = prepared
+    }
+
+    func prepare(_ selection: any ImageSelection) async throws -> PreparedImage {
+        selections.append(try await selection.loadData())
+        return prepared
+    }
+
+    func loadedSelections() -> [Data] { selections }
+}
+
+private actor UnusedDropFilePreparer: FilePreparing {
+    func prepare(_: URL) async throws -> PreparedFile {
+        throw FilePreparationError.selectionUnavailable
+    }
+}
+
+@MainActor
+private struct SilentDropClipboard: AttachmentClipboard {
+    func copy(_: String) throws {}
 }
 
 @MainActor
