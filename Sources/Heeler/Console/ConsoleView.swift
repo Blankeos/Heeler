@@ -61,19 +61,15 @@ struct ConsoleView: View {
         GeometryReader { geometry in
             let presentation = ConsoleSplitPresentation(
                 horizontalSizeClass: horizontalSizeClass,
-                // Resolve the aspect ratio from the full bounds, including safe areas.
-                size: CGSize(
-                    width: geometry.size.width
-                        + geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing,
-                    height: geometry.size.height
-                        + geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom),
-                hasSelection: selectedAgent.wrappedValue != nil)
+                size: geometry.size,
+                safeAreaInsets: geometry.safeAreaInsets)
             NavigationSplitView(columnVisibility: Binding(
                 get: { splitVisibility.visibility },
-                set: { splitVisibility.setVisibility($0) })
+                set: { splitVisibility.systemDidChangeVisibility($0) })
             ) {
                 content
                     .navigationTitle("Agents")
+                    .toolbar(removing: presentation.showsSidebarToggle ? .sidebarToggle : nil)
                     .searchable(text: $searchText, prompt: "Search Agents")
                     .navigationSplitViewColumnWidth(
                         min: presentation.sidebarWidth.minimum,
@@ -142,9 +138,24 @@ struct ConsoleView: View {
                     }
             } detail: {
                 detail
+                    .toolbar {
+                        if presentation.showsSidebarToggle {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button(splitVisibility.sidebarToggleTitle, systemImage: "sidebar.left") {
+                                    withAnimation(reduceMotion ? nil : .snappy) {
+                                        splitVisibility.toggleSidebar()
+                                    }
+                                }
+                                .hoverEffect(.highlight)
+                            }
+                        }
+                    }
             }
-            .navigationSplitViewStyle(ConsoleNavigationSplitViewStyle(style: presentation.style))
-            .onAppear { splitVisibility.seed(from: presentation) }
+            // Keep structural identity stable across rotation and size-class changes.
+            .navigationSplitViewStyle(.balanced)
+            .onChange(of: presentation, initial: true) { _, presentation in
+                splitVisibility.update(from: presentation)
+            }
         }
         // The detail's actions can present these even while the sidebar is hidden.
         .sheet(item: $hostSheet) { destination in

@@ -1,69 +1,65 @@
 import SwiftUI
 
-/// Layout policy uses the scene's available bounds, including iPad multitasking.
+/// Layout policy uses scene bounds; the split style itself stays constant.
 struct ConsoleSplitPresentation: Equatable {
-    enum Style: Equatable {
-        case automatic, balanced, prominentDetail
-    }
-
     struct ColumnWidth: Equatable {
         let minimum: CGFloat
         let ideal: CGFloat
         let maximum: CGFloat?
     }
 
-    let style: Style
+    let hasUsableSize: Bool
+    let showsSidebarToggle: Bool
     let defaultVisibility: NavigationSplitViewVisibility
     let sidebarWidth: ColumnWidth
 
-    init(horizontalSizeClass: UserInterfaceSizeClass?, size: CGSize, hasSelection: Bool) {
-        guard horizontalSizeClass == .regular else {
-            style = .automatic
+    init(
+        horizontalSizeClass: UserInterfaceSizeClass?, size: CGSize,
+        safeAreaInsets: EdgeInsets = EdgeInsets()
+    ) {
+        let width = size.width + safeAreaInsets.leading + safeAreaInsets.trailing
+        let height = size.height + safeAreaInsets.top + safeAreaInsets.bottom
+        // Insets must not turn an initial zero-sized layout pass into a valid seed.
+        hasUsableSize = size.width > 0 && size.height > 0
+            && width.isFinite && height.isFinite
+        showsSidebarToggle = horizontalSizeClass == .regular
+        guard hasUsableSize, horizontalSizeClass == .regular else {
             defaultVisibility = .automatic
             sidebarWidth = ColumnWidth(minimum: 320, ideal: 380, maximum: nil)
             return
         }
-        if size.width > size.height {
-            style = .balanced
+        if width > height {
             defaultVisibility = .all
             sidebarWidth = ColumnWidth(minimum: 320, ideal: 380, maximum: 440)
         } else {
-            style = .prominentDetail
-            defaultVisibility = hasSelection ? .detailOnly : .all
+            defaultVisibility = .detailOnly
             sidebarWidth = ColumnWidth(minimum: 320, ideal: 380, maximum: 400)
         }
     }
 }
 
-/// A default is applied once; rotation and selection never overwrite the user's toggle.
+/// Layout defaults follow the scene until an explicit sidebar button press.
+/// System binding write-backs report visibility without claiming user intent.
 struct ConsoleSplitVisibilityState {
     private(set) var visibility: NavigationSplitViewVisibility = .automatic
-    private(set) var isSeeded = false
+    private(set) var userVisibility: NavigationSplitViewVisibility?
 
-    mutating func seed(from presentation: ConsoleSplitPresentation) {
-        guard !isSeeded else { return }
-        visibility = presentation.defaultVisibility
-        isSeeded = true
+    var sidebarToggleTitle: String {
+        visibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar"
     }
 
-    mutating func setVisibility(_ visibility: NavigationSplitViewVisibility) {
+    mutating func update(from presentation: ConsoleSplitPresentation) {
+        guard presentation.hasUsableSize else { return }
+        visibility = userVisibility ?? presentation.defaultVisibility
+    }
+
+    mutating func systemDidChangeVisibility(_ visibility: NavigationSplitViewVisibility) {
         self.visibility = visibility
-        isSeeded = true
     }
-}
 
-struct ConsoleNavigationSplitViewStyle: NavigationSplitViewStyle {
-    let style: ConsoleSplitPresentation.Style
-
-    @ViewBuilder
-    func makeBody(configuration: Configuration) -> some View {
-        switch style {
-        case .automatic:
-            AutomaticNavigationSplitViewStyle().makeBody(configuration: configuration)
-        case .balanced:
-            BalancedNavigationSplitViewStyle().makeBody(configuration: configuration)
-        case .prominentDetail:
-            ProminentDetailNavigationSplitViewStyle().makeBody(configuration: configuration)
-        }
+    mutating func toggleSidebar() {
+        let next: NavigationSplitViewVisibility = visibility == .detailOnly ? .all : .detailOnly
+        userVisibility = next
+        visibility = next
     }
 }
