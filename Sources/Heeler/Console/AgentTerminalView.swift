@@ -238,16 +238,18 @@ struct AgentTerminalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The scene root's window, known before this screen first renders.
+    @Environment(\.sceneWindow) private var sceneWindow
+    /// This view's own window, for hosts without a scene root.
+    @State private var mountedWindow = WindowReference()
 
     private var isDirectInput: Bool { inputMode.isDirect }
 
+    /// The status bar height of the window this terminal is in. Another
+    /// window's inset is wrong under Stage Manager, where windows sit at
+    /// different distances from the status bar.
     private var statusBarInset: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .safeAreaInsets.top ?? 0
+        (sceneWindow?.window ?? mountedWindow.window)?.safeAreaInsets.top ?? 0
     }
 
     init(
@@ -875,6 +877,16 @@ struct AgentTerminalView: View {
         // bar appearance. Its content stays hidden, while this inset keeps
         // terminal output below the system clock.
         .padding(.top, statusBarInset)
+        .background {
+            // Keyboard geometry and the status bar inset follow this view's
+            // own window, not whichever window of the app is key.
+            WindowReader { window in
+                keyboardInset.attach(to: window)
+                mountedWindow.attach(window)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .background(
             terminal.themes.selection(for: colorScheme)
                 .surfaceBackground(for: colorScheme))
