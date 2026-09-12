@@ -583,7 +583,7 @@ private final class TerminalInputTextRange: UITextRange {
 /// `pressesBegan` maps `UIPress` to this and calls
 /// ``HeelerTerminalView/beginPhysicalKeyForArmedModifiers(_:token:)`` — the
 /// only consume path for hardware presses.
-struct ArmedModifierPhysicalKey: Equatable, Sendable {
+struct ArmedModifierPhysicalKey: Equatable {
     var key: AgentQuickKey
     var physicalModifiers: TerminalKeyModifiers
 }
@@ -1868,7 +1868,11 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     private static func printableCharacter(_ string: String) -> Character? {
-        guard string.count == 1, let character = string.first, !character.isISOControl else {
+        guard string.count == 1, let character = string.first,
+            !character.unicodeScalars.contains(where: {
+                $0.properties.generalCategory == .control
+            })
+        else {
             return nil
         }
         return character
