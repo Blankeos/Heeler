@@ -1,0 +1,314 @@
+import Foundation
+import SwiftUI
+import Testing
+
+@testable import Heeler
+
+@Suite("Console keyboard command policy")
+struct ConsoleCommandTests {
+    @Test func shortcutTableMapsEveryRequestedKeyToItsAction() {
+        let expected: [Character: ConsoleCommandAction] = [
+            "1": .selectAgent(1), "2": .selectAgent(2), "3": .selectAgent(3),
+            "4": .selectAgent(4), "5": .selectAgent(5), "6": .selectAgent(6),
+            "7": .selectAgent(7), "8": .selectAgent(8), "9": .selectAgent(9),
+            "[": .previousAgent, "]": .nextAgent, "f": .focusSearch, "n": .newAgent,
+            ",": .settings, "h": .hosts, "e": .toggleInputMode, "\r": .sendDraft,
+            "w": .closeAgent,
+        ]
+        let shortcuts = ConsoleCommandShortcut.all
+        #expect(shortcuts.count == expected.count)
+        #expect(Set(shortcuts.map(\.id)).count == shortcuts.count)
+        #expect(Set(shortcuts.map(\.key)).count == shortcuts.count)
+        for shortcut in shortcuts {
+            #expect(expected[shortcut.key] == shortcut.action)
+            #expect(
+                shortcut.modifiers == (shortcut.action == .hosts ? [.command, .shift] : [.command]))
+            #expect(!shortcut.title.isEmpty)
+        }
+    }
+
+    @Test func allShortcutsRequireCommandAndZoomIsAbsent() {
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(shortcut.modifiers.contains(.command))
+            #expect(![Character("+"), "-", "=", "_"].contains(shortcut.key))
+            #expect(!shortcut.modifiers.contains(.control))
+            #expect(!shortcut.modifiers.contains(.option))
+        }
+    }
+
+    @Test(arguments: ConsoleCommandFocus.allCases, [false, true])
+    func availabilityCoversFocusAndSelection(focus: ConsoleCommandFocus, selected: Bool) {
+        for mode in AgentInputMode.allCases {
+            for hasDraft in [false, true] {
+                let availability = ConsoleCommandAvailability(
+                    focus: focus, hasSelection: selected, agentCount: 3,
+                    inputMode: mode, hasDraft: hasDraft)
+                for action: ConsoleCommandAction in [.focusSearch, .newAgent, .settings, .hosts] {
+                    #expect(availability.allows(action))
+                }
+                #expect(availability.allows(.closeAgent) == selected)
+                #expect(availability.allows(.toggleInputMode) == selected)
+                #expect(
+                    availability.allows(.sendDraft)
+                        == (selected && focus == .composer && mode == .composer && hasDraft))
+                #expect(availability.allows(.previousAgent))
+                #expect(availability.allows(.nextAgent))
+                #expect(availability.allows(.selectAgent(3)))
+                #expect(!availability.allows(.selectAgent(4)))
+            }
+        }
+    }
+
+    @Test(arguments: [0, 1, 8, 9, 12])
+    func numberedSelectionIsBoundedByBothInventoryAndNine(count: Int) {
+        let availability = ConsoleCommandAvailability(
+            focus: .none, hasSelection: false, agentCount: count,
+            inputMode: .composer, hasDraft: false)
+        #expect(availability.allows(.previousAgent) == (count > 0))
+        #expect(availability.allows(.nextAgent) == (count > 0))
+        for position in 0...10 {
+            #expect(
+                availability.allows(.selectAgent(position))
+                    == ((1...9).contains(position) && position <= count))
+        }
+    }
+
+    @Test func navigationUsesVisibleOrderAndWraps() {
+        let rows = ["host-b:pinned", "host-b:working", "host-a:idle"]
+        #expect(
+            ConsoleCommandNavigation.destination(for: .selectAgent(2), in: rows, selection: nil)
+                == rows[1])
+        #expect(
+            ConsoleCommandNavigation.destination(for: .nextAgent, in: rows, selection: rows[2])
+                == rows[0])
+        #expect(
+            ConsoleCommandNavigation.destination(for: .previousAgent, in: rows, selection: rows[0])
+                == rows[2])
+        #expect(
+            ConsoleCommandNavigation.destination(
+                for: .nextAgent, in: rows, selection: "filtered-out") == rows[0])
+        #expect(
+            ConsoleCommandNavigation.destination(for: .previousAgent, in: rows, selection: nil)
+                == rows[2])
+        #expect(
+            ConsoleCommandNavigation.destination(for: .selectAgent(4), in: rows, selection: nil)
+                == nil)
+        #expect(
+            ConsoleCommandNavigation.destination(for: .nextAgent, in: [String](), selection: nil)
+                == nil)
+    }
+}
+
+@MainActor
+@Suite("Console command scene registrations")
+struct ConsoleCommandRegistryTests {
+    private let agent = ConsoleAgent.ID(hostID: UUID(), paneID: "opaque:pA")
+
+    private func target(
+        registry: ConsoleCommandRegistry,
+        context: @escaping () -> ConsoleCommandTarget.Context,
+        navigate: @escaping (ConsoleAgent.ID) -> Void = { _ in },
+        close: @escaping () -> Void = {}
+    ) -> ConsoleCommandTarget {
+        ConsoleCommandTarget(
+            registry: registry, context: context, navigate: navigate,
+            focusSearch: {}, newAgent: {}, settings: {}, hosts: {}, closeAgent: close)
+    }
+
+    private func context(
+        selection: ConsoleAgent.ID?, covered: Bool = false
+    ) -> ConsoleCommandTarget.Context {
+        .init(
+            selection: selection, agents: [agent], isSearchFocused: false,
+            isCovered: covered, inputMode: .composer)
+    }
+
+    private func registerTerminal(
+        _ registry: ConsoleCommandRegistry, token: UUID = UUID(),
+        focused: Bool = false, available: @escaping () -> Bool = { true },
+        toggle: @escaping () -> Void = {}
+    ) {
+        registry.register(
+            ConsoleCommandRegistry.Terminal(
+                token: token, agentID: agent, isFocused: focused,
+                isAvailable: available, toggleInputMode: toggle))
+    }
+
+    @Test func scenesDispatchOnlyTheirOwnActions() {
+        let first = ConsoleCommandRegistry()
+        let second = ConsoleCommandRegistry()
+        var firstToggles = 0
+        var secondToggles = 0
+        registerTerminal(first, toggle: { firstToggles += 1 })
+        registerTerminal(second, toggle: { secondToggles += 1 })
+        let firstTarget = target(registry: first, context: { context(selection: agent) })
+        let secondTarget = target(registry: second, context: { context(selection: agent) })
+        firstTarget.perform(.toggleInputMode)
+        #expect(firstToggles == 1)
+        #expect(secondToggles == 0)
+        secondTarget.perform(.toggleInputMode)
+        #expect(firstToggles == 1)
+        #expect(secondToggles == 1)
+    }
+
+    @Test func missingOrOffstageRegistrationDisablesDetailActions() {
+        let registry = ConsoleCommandRegistry()
+        let commands = target(registry: registry, context: { context(selection: agent) })
+        #expect(!commands.allows(.toggleInputMode))
+        #expect(!commands.allows(.sendDraft))
+        #expect(commands.allows(.closeAgent))
+        registerTerminal(registry, available: { false })
+        #expect(!commands.allows(.toggleInputMode))
+    }
+
+    @Test func outgoingViewCannotUnregisterReplacement() {
+        let registry = ConsoleCommandRegistry()
+        let old = UUID()
+        let replacement = UUID()
+        registerTerminal(registry, token: old)
+        registerTerminal(registry, token: replacement)
+        registry.removeTerminal(old)
+        #expect(registry.terminal?.token == replacement)
+        for token in [old, replacement] {
+            registry.register(
+                ConsoleCommandRegistry.Composer(
+                    token: token, terminalToken: replacement, agentID: agent,
+                    isFocused: true, hasDraft: { true }, send: {}))
+        }
+        registry.removeComposer(old)
+        #expect(registry.composer?.token == replacement)
+        registry.removeTerminal(replacement)
+        registry.removeComposer(replacement)
+        #expect(registry.terminal == nil)
+        #expect(registry.composer == nil)
+    }
+
+    @Test func selectionAndModalStateAreRecheckedAtDispatch() {
+        let registry = ConsoleCommandRegistry()
+        var selected: ConsoleAgent.ID? = agent
+        var covered = false
+        var toggles = 0
+        var closes = 0
+        registerTerminal(registry, toggle: { toggles += 1 })
+        let commands = target(
+            registry: registry, context: { context(selection: selected, covered: covered) },
+            close: {
+                closes += 1
+                selected = nil
+            })
+        #expect(commands.allows(.toggleInputMode))
+        covered = true
+        for shortcut in ConsoleCommandShortcut.all {
+            #expect(!commands.allows(shortcut.action))
+        }
+        commands.perform(.toggleInputMode)
+        #expect(toggles == 0)
+        covered = false
+        commands.perform(.closeAgent)
+        #expect(closes == 1)
+        #expect(selected == nil)
+        commands.perform(.toggleInputMode)
+        #expect(toggles == 0)
+    }
+
+    @Test func sendUsesRegisteredActionAndRechecksDraftFocusAndOwner() async {
+        let registry = ConsoleCommandRegistry()
+        let token = UUID()
+        let terminalToken = UUID()
+        var draft = "a local draft"
+        var sends = 0
+        var selected: ConsoleAgent.ID? = agent
+        registerTerminal(registry, token: terminalToken)
+        func registerComposer(focused: Bool, token: UUID) {
+            registry.register(
+                ConsoleCommandRegistry.Composer(
+                    token: token, terminalToken: terminalToken, agentID: agent, isFocused: focused,
+                    hasDraft: { draft.contains { !$0.isWhitespace } },
+                    send: {
+                        sends += 1
+                        draft = ""
+                    }))
+        }
+        let commands = target(registry: registry, context: { context(selection: selected) })
+        registerComposer(focused: true, token: token)
+        #expect(commands.allows(.sendDraft))
+        await commands.sendDraft(for: token)
+        #expect(sends == 1)
+        #expect(draft.isEmpty)
+        #expect(!commands.allows(.sendDraft))
+        draft = " \n "
+        await commands.sendDraft(for: token)
+        #expect(sends == 1)
+        draft = "another draft"
+        registerComposer(focused: false, token: token)
+        await commands.sendDraft(for: token)
+        #expect(sends == 1)
+        registerComposer(focused: true, token: token)
+        selected = ConsoleAgent.ID(hostID: UUID(), paneID: agent.paneID)
+        await commands.sendDraft(for: token)
+        #expect(sends == 1)
+        selected = agent
+        registerComposer(focused: true, token: UUID())
+        await commands.sendDraft(for: token)
+        #expect(sends == 1)
+    }
+
+    @Test func navigationDispatchUsesCurrentFilteredRows() {
+        let registry = ConsoleCommandRegistry()
+        let other = ConsoleAgent.ID(hostID: UUID(), paneID: "another")
+        var rows = [agent, other]
+        var selected: ConsoleAgent.ID?
+        let commands = target(
+            registry: registry,
+            context: {
+                .init(
+                    selection: selected, agents: rows, isSearchFocused: true,
+                    isCovered: false, inputMode: .composer)
+            }, navigate: { selected = $0 })
+        commands.perform(.selectAgent(2))
+        #expect(selected == other)
+        rows = [agent]
+        commands.perform(.selectAgent(2))
+        #expect(selected == other)
+        commands.perform(.nextAgent)
+        #expect(selected == agent)
+    }
+
+    @Test func searchAndTerminalFocusSuppressPendingComposerFocus() {
+        let registry = ConsoleCommandRegistry()
+        let terminalToken = UUID()
+        var searchFocused = false
+        registerTerminal(registry, token: terminalToken)
+        registry.register(
+            ConsoleCommandRegistry.Composer(
+                token: UUID(), terminalToken: terminalToken, agentID: agent,
+                isFocused: true, hasDraft: { true }, send: {}))
+        let commands = target(
+            registry: registry,
+            context: {
+                .init(
+                    selection: agent, agents: [agent], isSearchFocused: searchFocused,
+                    isCovered: false, inputMode: .composer)
+            })
+        #expect(commands.allows(.sendDraft))
+        searchFocused = true
+        #expect(!commands.allows(.sendDraft))
+        searchFocused = false
+        registerTerminal(registry, token: terminalToken, focused: true)
+        #expect(!commands.allows(.sendDraft))
+    }
+
+    @Test func replacedTerminalCannotSendFromItsOutgoingComposer() {
+        let registry = ConsoleCommandRegistry()
+        let oldTerminal = UUID()
+        registerTerminal(registry, token: oldTerminal)
+        registry.register(
+            ConsoleCommandRegistry.Composer(
+                token: UUID(), terminalToken: oldTerminal, agentID: agent,
+                isFocused: true, hasDraft: { true }, send: {}))
+        let commands = target(registry: registry, context: { context(selection: agent) })
+        #expect(commands.allows(.sendDraft))
+        registerTerminal(registry)
+        #expect(!commands.allows(.sendDraft))
+    }
+}

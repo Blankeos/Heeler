@@ -7,6 +7,13 @@ Entries reference the issue that motivated them.
 
 ## [Unreleased]
 
+### Added
+
+- Hardware keyboard shortcuts: ⌘1–9 selects visible Agents, ⌘[ / ⌘] switches
+  Agents, ⌘F searches, ⌘N starts an Agent, ⌘, opens Settings, ⌘⇧H opens Hosts,
+  ⌘E switches Direct Input / Composer, ⌘Return sends the focused Composer draft,
+  and ⌘W closes the Agent view.
+
 ## [0.1.7] - 2026-09-12
 
 ### Added

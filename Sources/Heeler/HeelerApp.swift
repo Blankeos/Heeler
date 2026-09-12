@@ -26,6 +26,7 @@ struct HeelerApp: App {
                 productionContent
             #endif
         }
+        .commands { ConsoleCommands() }
     }
 
     private var productionContent: some View {

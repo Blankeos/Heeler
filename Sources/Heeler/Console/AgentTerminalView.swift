@@ -433,6 +433,15 @@ struct AgentTerminalView: View {
         // otherwise replacing the system keyboard changes the proposal that
         // reaches Ghostty even when our explicit inset is unchanged.
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .modifier(ConsoleTerminalCommandRegistration(
+            agentID: agent.id,
+            isFocused: keyboardControl.isFirstResponder,
+            isAvailable: !isSelectingPhoto && !isSelectingFile && !isConfirmingClose
+                && !isStartingAgent && !isManagingSnippets && !isShowingSkillsPicker
+                && !isRenamingAgent && viewingSkill == nil && !isRenamingWorkspace
+                && !isShowingWorktree && !isShowingAttachLinks && closeErrorMessage == nil,
+            isOnStage: isOnStage,
+            toggleInputMode: { selectInputMode(inputMode.isDirect ? .composer : .direct) }))
         .task { composer.open() }
     }
 
