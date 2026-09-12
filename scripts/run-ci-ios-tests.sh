@@ -912,12 +912,16 @@ printf 'Claimed fixture port block %s-%s\n' \
 # unlike a port clash.
 #
 # Candidates come back last-first, preserving the previous choice of the last
-# matching device for a run that finds the machine idle.
+# matching device for a run that finds the machine idle. The name is matched
+# as a literal prefix plus " (" so the default "iPhone 17" does not also
+# claim "iPhone 17 Pro", and names with parentheses (iPad Pro 13-inch (M5))
+# stay literal rather than becoming an awk regex.
+ci_simulator_name="${HEELER_CI_SIMULATOR_NAME:-iPhone 17}"
 simulator_candidates=()
 while IFS= read -r candidate; do
     [[ -n "$candidate" ]] && simulator_candidates+=("$candidate")
-done < <(xcrun simctl list devices available | awk '
-    /iPhone 17 \(/ {
+done < <(xcrun simctl list devices available | awk -v name="$ci_simulator_name" '
+    index($0, name " (") {
         candidate = ""
         for (field = 1; field <= NF; field += 1) {
             value = $field
@@ -933,7 +937,7 @@ done < <(xcrun simctl list devices available | awk '
     END { for (index_ = count; index_ >= 1; index_ -= 1) print list[index_] }
 ')
 if [[ "${#simulator_candidates[@]}" -eq 0 ]]; then
-    echo "No available iPhone 17 Simulator was found" >&2
+    echo "No available ${ci_simulator_name} Simulator was found" >&2
     exit 1
 fi
 
@@ -985,7 +989,7 @@ else
     done
 fi
 if [[ -z "$simulator_udid" ]]; then
-    echo "Every available iPhone 17 Simulator is claimed by a live run." >&2
+    echo "Every available ${ci_simulator_name} Simulator is claimed by a live run." >&2
     for candidate in "${simulator_candidates[@]}"; do
         printf '  %s: held by pid %s\n' \
             "$candidate" "$(simulator_held_by "$candidate")" >&2
@@ -993,7 +997,7 @@ if [[ -z "$simulator_udid" ]]; then
     echo >&2
     echo "A run needs a device of its own: the fixture is delivered through" >&2
     echo "per-device launchctl environment, which two runs would overwrite." >&2
-    echo "Create another iPhone 17 with 'xcrun simctl create', or pin one" >&2
+    echo "Create another ${ci_simulator_name} with 'xcrun simctl create', or pin one" >&2
     echo "explicitly with HEELER_CI_SIMULATOR_UDID=<udid>." >&2
     exit 1
 fi

@@ -77,11 +77,12 @@ targets:
         # declaring it here keeps every TestFlight upload from stalling on the
         # Missing Compliance prompt.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        # iPhone only. App Store Connect derives device support from the build.
-        TARGETED_DEVICE_FAMILY: "1"
+        # iPhone and iPad. App Store Connect derives device support from the build.
+        TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         # ActivityKit starts Live Activities from the app; HeelerWidgets renders them.
         INFOPLIST_KEY_NSSupportsLiveActivities: YES
     dependencies:
@@ -133,8 +134,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.bybee.heeler.NotificationService
         MARKETING_VERSION: "0.1.7"
         CURRENT_PROJECT_VERSION: "19"
-        # Match the containing app's iPhone-only device family.
-        TARGETED_DEVICE_FAMILY: "1"
+        # Match the containing app's iPhone and iPad device family.
+        TARGETED_DEVICE_FAMILY: "1,2"
 
   # Lock-screen / Dynamic Island Live Activity (docs/agents/live-activity-contract.md).
   # Thin WidgetKit shell: attributes, envelope open, and Notification Key
@@ -181,8 +182,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.bybee.heeler.Widgets
         MARKETING_VERSION: "0.1.7"
         CURRENT_PROJECT_VERSION: "19"
-        # Match the containing app's iPhone-only device family.
-        TARGETED_DEVICE_FAMILY: "1"
+        # Match the containing app's iPhone and iPad device family.
+        TARGETED_DEVICE_FAMILY: "1,2"
 
   HeelerTests:
     type: bundle.unit-test
