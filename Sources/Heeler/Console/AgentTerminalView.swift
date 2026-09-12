@@ -938,7 +938,8 @@ struct AgentTerminalView: View {
                     chromeColorScheme: terminal.themes.selection(for: colorScheme)
                         .chromeColorScheme(for: colorScheme),
                     isKeyboardUp: directSwitcherKeyboardIsUp,
-                    isToolsKeyboardPresented: usesDirectToolsKeyboard),
+                    isToolsKeyboardPresented: usesDirectToolsKeyboard,
+                    armedModifiers: keyboardControl.pendingModifiers),
                 interactions: .init(
                     switcher: agentSwitcher,
                     actions: composerActions,
@@ -946,6 +947,11 @@ struct AgentTerminalView: View {
                     switchKeyboard: directKeyboardSwitchAction,
                     sendQuickKey: sendAgentQuickKey,
                     paste: { text in keyboardControl.paste(text) },
+                    toggleModifier: { keyboardControl.toggleModifier($0) },
+                    sendInterrupt: {
+                        keyboardControl.setModifierArmed(.control, armed: true)
+                        sendAgentQuickKey(.character("c"))
+                    },
                     showComposer: { selectInputMode(.composer) },
                     restoreComposerThen: restoreComposerThen)))
             .onAppear {

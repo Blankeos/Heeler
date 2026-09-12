@@ -298,6 +298,11 @@ struct ShellTerminalInputRow: View {
     /// borrowed from a different set.
     private static let glyphPointSize: CGFloat = 12
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var sizeClass: InputShortcutStripPresentation.SizeClass {
+        horizontalSizeClass == .regular ? .regular : .compact
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -311,7 +316,9 @@ struct ShellTerminalInputRow: View {
             // to the mode control. Painting the fill with the row's own
             // background leaves the glyph reading as a bare icon.
             .tint(Color(uiColor: .secondarySystemBackground))
-            .frame(width: 44, height: 44)
+            .frame(
+                width: InputChromeLayout.shellAccessoryButtonWidth,
+                height: InputChromeLayout.shortcutRowHeight)
 
             Spacer(minLength: 4)
 
@@ -320,7 +327,7 @@ struct ShellTerminalInputRow: View {
                 Text("Keys").tag(TerminalKeyboardMode.controls)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 184)
+            .frame(maxWidth: InputChromeLayout.modePickerMaxWidth(for: sizeClass))
 
             Spacer(minLength: 4)
 
@@ -328,7 +335,9 @@ struct ShellTerminalInputRow: View {
                 Image(systemName: "text.append")
                     .font(.system(size: Self.glyphPointSize))
                     .foregroundStyle(Color(uiColor: .label))
-                    .frame(width: 44, height: 44)
+                    .frame(
+                        width: InputChromeLayout.shellAccessoryButtonWidth,
+                        height: InputChromeLayout.shortcutRowHeight)
             }
             .accessibilityLabel("Insert New Line")
             .accessibilityHint("Adds a line break without submitting")
@@ -405,10 +414,14 @@ struct ShellTerminalKeysDock: View {
 private struct ShellTerminalEdgeBackGesture: View {
     let isEnabled: Bool
     let onBack: @MainActor () async -> Void
+    /// Hit strip along the leading edge. Not input-chrome width; named so
+    /// this file has no raw width literals.
+    private static let hitWidth: CGFloat = 24
+    private static let minimumTranslation: CGFloat = 72
 
     var body: some View {
         Color.clear
-            .frame(width: 24)
+            .frame(width: Self.hitWidth)
             .frame(maxHeight: .infinity)
             .contentShape(.rect)
             .gesture(
@@ -416,8 +429,8 @@ private struct ShellTerminalEdgeBackGesture: View {
                     .onEnded { value in
                         let horizontal = value.translation.width
                         guard isEnabled,
-                            value.startLocation.x <= 24,
-                            horizontal >= 72,
+                            value.startLocation.x <= Self.hitWidth,
+                            horizontal >= Self.minimumTranslation,
                             abs(value.translation.height) <= horizontal * 0.75
                         else { return }
                         Task { await onBack() }

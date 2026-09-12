@@ -18,6 +18,9 @@ struct AgentControlKeyboard: View {
 
     var body: some View {
         GeometryReader { geometry in
+            // Cap and center the pager so a 13-inch iPad does not stretch
+            // the 3×3 Agent pad or the Terminal page across 1000 pt.
+            let contentWidth = min(geometry.size.width, InputChromeLayout.maxKeyboardContentWidth)
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     pageButton(.agent, title: "Agent", label: "Agent controls page")
@@ -25,7 +28,7 @@ struct AgentControlKeyboard: View {
                         Circle().fill(page == .agent ? Color.accentColor : .secondary.opacity(0.4))
                         Circle().fill(page == .terminal ? Color.accentColor : .secondary.opacity(0.4))
                     }
-                    .frame(width: 15, height: 5)
+                    .frame(width: InputChromeLayout.keyboardPageIndicatorWidth, height: 5)
                     .accessibilityHidden(true)
                     pageButton(.terminal, title: "Terminal", label: "Terminal keyboard page")
                 }
@@ -70,6 +73,7 @@ struct AgentControlKeyboard: View {
                             })
                 }
             }
+            .frame(width: contentWidth, height: geometry.size.height)
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }

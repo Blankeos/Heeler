@@ -7,6 +7,12 @@ Entries reference the issue that motivated them.
 
 ## [Unreleased]
 
+### Changed
+
+- Direct Input's shortcut strip drops keys a hardware keyboard already
+  provides, and the custom Terminal, Agent, and Skills keyboards fill iPad
+  width instead of an iPhone-sized well.
+
 ## [0.1.7] - 2026-09-12
 
 ### Added
