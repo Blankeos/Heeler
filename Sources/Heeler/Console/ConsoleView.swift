@@ -49,6 +49,10 @@ struct ConsoleView: View {
     @State private var keyboardInset = TerminalKeyboardInset()
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+    /// The window-aware entry into navigation; nil outside a scene root.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     var body: some View {
         // A split view instead of a plain stack for the iPad's sake: regular
@@ -161,7 +165,7 @@ struct ConsoleView: View {
             if let banner = bannerStore.banner {
                 AgentNotificationBannerView(banner: banner) {
                     bannerStore.dismiss()
-                    notificationRouter.open(banner.target)
+                    openNotificationTarget(banner.target)
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -411,6 +415,35 @@ struct ConsoleView: View {
                 console.togglePin(
                     hostID: agent.hostID, paneID: agent.agent.paneID)
             }
+            // Never on iPhone, and not for the Agent this window already shows.
+            if supportsMultipleWindows, notificationRouter.path.last != agent.id {
+                Button("Open in New Window", systemImage: "plus.rectangle.on.rectangle") {
+                    openInNewWindow(agent)
+                }
+            }
+        }
+        .modifier(
+            AgentWindowDrag(
+                route: AgentRoute(agentID: agent.id),
+                title: agent.agent.displayName,
+                isEnabled: supportsMultipleWindows))
+    }
+
+    /// A window already showing this Agent comes forward instead of a second
+    /// one opening: two windows on one Agent would contend for its Host's
+    /// single terminal channel.
+    private func openInNewWindow(_ agent: ConsoleAgent) {
+        if sceneRouting?.directory.activateScene(presenting: agent.id) == true { return }
+        openWindow(value: AgentRoute(agentID: agent.id))
+    }
+
+    /// Deep links raised inside this window obey the same single-window rule
+    /// as a notification tap.
+    private func openNotificationTarget(_ target: AgentNotificationTarget?) {
+        if let sceneRouting {
+            sceneRouting.open(target)
+        } else {
+            notificationRouter.open(target)
         }
     }
 

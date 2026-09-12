@@ -149,15 +149,21 @@ final class PushRegistrationStore {
 @MainActor
 final class PushRegistrationDelegate: NSObject, UIApplicationDelegate {
     let registration = PushRegistrationStore()
-    /// The Console navigation that Agent Notification taps drive (#74);
-    /// ContentView hands it to the Console's NavigationStack.
-    let notificationRouter: AgentNotificationRouter
+    /// The windows Agent Notification taps land in (#74). Each window owns
+    /// its own navigation router; this app-wide directory picks which one a
+    /// tap drives, so it has to exist before any window does.
+    let sceneDirectory: AgentSceneDirectory
     private let notificationCenterDelegate: AgentNotificationCenterDelegate
 
+    /// The stores every window shares. Built on first use rather than here,
+    /// so the Debug screenshot mode never constructs the production ones.
+    private(set) lazy var appModel = HeelerAppModel(
+        pushRegistration: registration, sceneDirectory: sceneDirectory)
+
     override init() {
-        let router = AgentNotificationRouter()
-        notificationRouter = router
-        notificationCenterDelegate = AgentNotificationCenterDelegate(router: router)
+        let directory = AgentSceneDirectory()
+        sceneDirectory = directory
+        notificationCenterDelegate = AgentNotificationCenterDelegate(directory: directory)
         super.init()
     }
 

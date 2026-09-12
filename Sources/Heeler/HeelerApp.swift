@@ -8,6 +8,8 @@ struct HeelerApp: App {
     /// only, so push bootstrap (#71) needs this adaptor.
     @UIApplicationDelegateAdaptor(PushRegistrationDelegate.self)
     private var pushDelegate
+    /// The aggregate phase across every window: active while any one is.
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         try? ImagePreparer.cleanupRemnants()
@@ -15,22 +17,29 @@ struct HeelerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // Valued by the Agent a window shows, so Open in New Window and a
+        // dragged Console row each get a window restored to their Agent. A
+        // cold launch opens the Console with no value.
+        WindowGroup(for: AgentRoute.self) { $route in
             #if DEBUG && targetEnvironment(simulator)
                 if DemoScreenshotMode.isEnabled {
                     DemoScreenshotRootView()
                 } else {
-                    productionContent
+                    productionContent(route: $route)
                 }
             #else
-                productionContent
+                productionContent(route: $route)
             #endif
+        }
+        .onChange(of: scenePhase) {
+            #if DEBUG && targetEnvironment(simulator)
+                guard !DemoScreenshotMode.isEnabled else { return }
+            #endif
+            pushDelegate.appModel.scenePhaseDidChange(scenePhase)
         }
     }
 
-    private var productionContent: some View {
-        ContentView(
-            pushRegistration: pushDelegate.registration,
-            notificationRouter: pushDelegate.notificationRouter)
+    private func productionContent(route: Binding<AgentRoute?>) -> some View {
+        ContentView(app: pushDelegate.appModel, windowRoute: route)
     }
 }

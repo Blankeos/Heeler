@@ -5,7 +5,7 @@ import Testing
 
 /// Foreground recovery (#142): what the app does to its Host connections when
 /// it returns from the background, driven through the same activity events
-/// `ContentView` subscribes to.
+/// `HeelerAppModel` subscribes to.
 ///
 /// A link that dies while the app is away produces no error at the moment it
 /// dies, because nothing is attempting anything: the reconnect loop is parked

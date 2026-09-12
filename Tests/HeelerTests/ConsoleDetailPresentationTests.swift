@@ -363,8 +363,8 @@ struct ConsoleDetailPresentationTests {
     /// on* is the reachable one: the screen reads `hosts.hosts` off the
     /// `HostStore` while the statuses come from the `ConsoleStore`
     /// (`ConsoleView.swift:530-536`), and the two are joined by an
-    /// `onChange` that runs after the body it follows
-    /// (`ContentView.swift:78-81`), so deleting one of several Hosts while
+    /// observation delivered on a later main-actor turn
+    /// (`HeelerAppModel.observeStores`), so deleting one of several Hosts while
     /// another reconnects renders at least once with the new list against
     /// the old statuses. A rule reading the list rather than the lookup puts
     /// "Agent Gone" on screen for that frame.

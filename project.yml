@@ -51,6 +51,18 @@ targets:
       - path: Sources/Heeler/Resources/Notices
         type: folder
         buildPhase: resources
+    info:
+      path: Sources/Heeler/Info.plist
+      properties:
+        # XcodeGen would otherwise hardcode 1.0/1 here, and a file value wins
+        # over the generated one; keep both versions on the build settings.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # A dragged Console row carries this activity; iPadOS creates a new
+        # window from it only for a declared type. The generated scene
+        # manifest already declares multiple-scene support.
+        NSUserActivityTypes:
+          - dev.bybee.heeler.agent
     entitlements:
       path: Sources/Heeler/Heeler.entitlements
       properties:
