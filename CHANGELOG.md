@@ -12,6 +12,9 @@ Entries reference the issue that motivated them.
 - iPad is a first-class target again. App Store builds include iPhone and
   iPad, iPad supports all four interface orientations, and `make sim-ipad` /
   `make test-ipad` run against the iPad simulator.
+- Drag text and images into the Composer on iPad. Send stays disabled, with
+  a visible "Waiting for image…" hint next to the button, until dropped
+  images finish staging.
 
 ### Changed
 

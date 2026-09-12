@@ -107,10 +107,14 @@ struct AgentComposerView: View {
     var isKeyboardHandoffCurrent: (UUID) -> Bool = { _ in false }
     var onFirstResponderRequest: (UUID, Bool) -> Void = { _, _ in }
     var onKeyboardHandoffSettled: (UUID) -> Void = { _ in }
+    /// Drop is Composer-only. Defaults to Composer so existing call sites stay
+    /// a drop target; Direct Input must pass `.direct` to keep this inert.
+    var inputMode: AgentInputMode = .composer
     @State private var isInputFocused = false
     /// An explicit dismissal hides suggestions for the current trigger token;
     /// removing the token arms them again.
     @State private var isSuggestionsDismissed = false
+    @State private var isDropTargeted = false
 
     private var isToolsKeyboardPresented: Bool {
         keyboardPresentation == .tools
@@ -140,9 +144,9 @@ struct AgentComposerView: View {
                         }
                         ZStack(alignment: .topLeading) {
                             AgentComposerTextEditor(
-                                text: Binding(
-                                    get: { store.draft },
-                                    set: { store.replaceDraft(with: $0) }),
+                                text: store.draft,
+                                selectedRange: store.draftSelection,
+                                onEdit: { store.applyEditorDraft($0, selection: $1) },
                                 isFocused: $isInputFocused,
                                 keyboardPresentation: keyboardPresentation,
                                 keyboardHandoffID: keyboardHandoffID,
@@ -232,7 +236,17 @@ struct AgentComposerView: View {
                             }
 
                             Spacer(minLength: 0)
-                            AgentComposerSendButton(isEnabled: store.canSend) {
+                            if store.hasPendingDroppedImages {
+                                Text(store.sendAccessibilityHint)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .accessibilityHidden(true)
+                            }
+                            AgentComposerSendButton(
+                                isEnabled: store.canSend,
+                                accessibilityHint: store.sendAccessibilityHint
+                            ) {
                                 Task { await deliverDraft { await store.send() } }
                             }
                         }
@@ -256,8 +270,17 @@ struct AgentComposerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(.secondary.opacity(0.16), lineWidth: 1)
+                        .fill(Color.accentColor.opacity(dropHighlight.fillOpacity))
                 }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(composerCardStroke, lineWidth: dropHighlight.strokeWidth)
+                }
+                .composerDropDestination(
+                    isEnabled: ComposerDropPolicy.acceptsDrops(in: inputMode),
+                    isTargeted: $isDropTargeted,
+                    accept: { store.acceptDrop($0) }
+                )
                 .padding(.horizontal, 12)
             }
             .padding(.vertical, 8)
@@ -383,6 +406,16 @@ struct AgentComposerView: View {
         Color(uiColor: .label).opacity(0.72)
     }
 
+    private var dropHighlight: ComposerDropHighlight {
+        ComposerDropHighlight(isTargeted: isDropTargeted)
+    }
+
+    private var composerCardStroke: Color {
+        dropHighlight.usesAccentStroke
+            ? Color.accentColor.opacity(0.72)
+            : Color.secondary.opacity(0.16)
+    }
+
 }
 
 /// The inline suggestion menu above the Composer's text area: the Skills the
@@ -498,6 +531,7 @@ private struct AgentComposerSkillSuggestions: View {
 
 struct AgentComposerSendButton: View {
     let isEnabled: Bool
+    var accessibilityHint: String = "Delivers the complete draft to the Agent"
     let action: () -> Void
 
     var body: some View {
@@ -509,7 +543,7 @@ struct AgentComposerSendButton: View {
         .buttonStyle(AgentComposerSendButtonStyle())
         .disabled(!isEnabled)
         .accessibilityLabel("Send")
-        .accessibilityHint("Delivers the complete draft to the Agent")
+        .accessibilityHint(accessibilityHint)
     }
 }
 
@@ -533,7 +567,9 @@ private struct AgentComposerSendButtonStyle: ButtonStyle {
 }
 
 private struct AgentComposerTextEditor: UIViewRepresentable {
-    @Binding var text: String
+    let text: String
+    let selectedRange: NSRange
+    let onEdit: (String, NSRange) -> Void
     @Binding var isFocused: Bool
     let keyboardPresentation: AgentComposerKeyboardPresentation
     let keyboardHandoffID: UUID?
@@ -542,7 +578,7 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
     let onKeyboardHandoffSettled: (UUID) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, isFocused: $isFocused)
+        Coordinator(onEdit: onEdit, isFocused: $isFocused)
     }
 
     func makeUIView(context: Context) -> AgentComposerUITextView {
@@ -559,8 +595,12 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: AgentComposerUITextView, context: Context) {
+        context.coordinator.onEdit = onEdit
         if textView.text != text {
             textView.text = text
+        }
+        if textView.selectedRange != selectedRange {
+            textView.selectedRange = selectedRange
         }
         textView.updateKeyboard(presentation: keyboardPresentation)
         textView.onKeyboardHandoffSettled = onKeyboardHandoffSettled
@@ -607,17 +647,21 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
-        private var text: Binding<String>
+        var onEdit: (String, NSRange) -> Void
         private var isFocused: Binding<Bool>
 
-        init(text: Binding<String>, isFocused: Binding<Bool>) {
-            self.text = text
+        init(onEdit: @escaping (String, NSRange) -> Void, isFocused: Binding<Bool>) {
+            self.onEdit = onEdit
             self.isFocused = isFocused
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            text.wrappedValue = textView.text
+            onEdit(textView.text, textView.selectedRange)
             textView.invalidateIntrinsicContentSize()
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            onEdit(textView.text, textView.selectedRange)
         }
 
         func textViewDidBeginEditing(_: UITextView) {

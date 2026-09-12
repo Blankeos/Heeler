@@ -80,6 +80,7 @@ final class AgentAttachStore {
     let input: TerminalInputController
     let staging: ComposerStagingStore
     let close: ClosePaneStore
+    private let composer: any ComposerDraftOperations
     private(set) var attachLinkOpenFailure: AttachLinkOpenFailure?
 
     private var transportGeneration: UInt64?
@@ -129,6 +130,7 @@ final class AgentAttachStore {
         self.runTerminal = runTerminal
         self.transportGeneration = transportGeneration
         self.input = input
+        self.composer = composer
         let linkIndex = AttachLinkIndex()
         self.linkIndex = linkIndex
         terminal = Self.makeTerminal(
@@ -138,6 +140,7 @@ final class AgentAttachStore {
             stageImage: stageImage,
             stageFile: stageFile,
             composer: composer)
+        (composer as? AgentComposerStore)?.bindStaging(staging)
         close = ClosePaneStore(paneTitle: paneTitle, close: closePane)
     }
 
@@ -520,6 +523,9 @@ final class AgentAttachStore {
                 self.abortTerminalRecoveryOffStage(ownedBy: recoveryOwner)
                 return
             }
+            // After the queued leave has finished. Resetting earlier would
+            // let a drop start while staging is still tearing down.
+            self.composer.resumeDroppedImagesAfterRejoin()
             if requiresFullReplacement, self.terminal.status != .stopped {
                 await self.terminal.stop(preservingPendingPaste: true)
                 guard self.terminalRecoveryOwner == recoveryOwner else { return }
@@ -638,6 +644,7 @@ final class AgentAttachStore {
         // behind it on "Connecting…". The retain is temporary and
         // self-breaking: the task releases the store when the teardown ends.
         return enqueueLifecycleTransition { [self] in
+            composer.abandonDroppedImagesForTeardown()
             await staging.leave()
             await terminal.stop()
             linkIndex.clear()
