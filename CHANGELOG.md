@@ -11,13 +11,13 @@ Entries reference the issue that motivated them.
 
 - On iPad, Heeler opens in more than one window and resizes freely under Stage
   Manager. Long-press an Agent and choose Open in New Window, or drag its row
-  out, to watch two Agents side by side; each window restores its own Agent
-  after a relaunch. A notification for an Agent already on screen brings that
-  window forward instead of opening another, and a live window resize sends
-  the Host one terminal resize once the window settles. A Host still has one
-  live terminal, so of two windows on the same Host only the one you are
-  working in is live; the other shows Live in Another Window with Take Over
-  Here, except while that Host's Shell Terminal is open.
+  out; each window restores its own Agent after a relaunch. Windows on Agents
+  of different Hosts are all live at once. A Host has one live terminal, so
+  windows on the same Host hand it to the window you are working in, and the
+  others show Live in Another Window with Take Over Here (not while that
+  Host's Shell Terminal is open). A notification for an Agent already on
+  screen brings that window forward instead of opening another, and a live
+  window resize sends the Host one terminal resize once the window settles.
 
 ## [0.1.7] - 2026-09-12
 
