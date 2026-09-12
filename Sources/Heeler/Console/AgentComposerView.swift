@@ -286,6 +286,11 @@ struct AgentComposerView: View {
             .padding(.vertical, 8)
 
         }
+        .modifier(ConsoleComposerCommandRegistration(
+            agentID: switcher.selectedID,
+            isFocused: isInputFocused,
+            hasDraft: { store.canSend },
+            send: { await deliverDraft { await store.send() } }))
         .onAppear {
             guard let selectedID = switcher.selectedID,
                   keyboardHandoff.consume(selectedID)

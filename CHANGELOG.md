@@ -15,6 +15,10 @@ Entries reference the issue that motivated them.
 - Drag text and images into the Composer on iPad. Send stays disabled, with
   a visible "Waiting for image…" hint next to the button, until dropped
   images finish staging.
+- Hardware keyboard shortcuts: ⌘1–9 selects visible Agents, ⌘[ / ⌘] switches
+  Agents, ⌘F searches, ⌘N starts an Agent, ⌘, opens Settings, ⌘⇧H opens Hosts,
+  ⌘E switches Direct Input / Composer, ⌘Return sends the focused Composer draft,
+  and ⌘W closes the Agent view.
 
 ### Changed
 

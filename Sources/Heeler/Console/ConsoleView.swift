@@ -35,6 +35,9 @@ struct ConsoleView: View {
     /// Client-side Agents search text (#292). Applied after `hostFilter` in
     /// both presentations; the Host filter is untouched.
     @State private var searchText = ""
+    @State private var isSearchPresented = false
+    @FocusState private var isSearchFocused: Bool
+    @State private var commandRegistry = ConsoleCommandRegistry()
     /// Owns flat/grouped mode and per-Host collapsed state (#245).
     @State private var listPresentation = ConsoleListPresentationStore()
     /// Outlives the detail column's rebuilds, which is the whole point: it
@@ -69,7 +72,9 @@ struct ConsoleView: View {
             ) {
                 content
                     .navigationTitle("Agents")
-                    .searchable(text: $searchText, prompt: "Search Agents")
+                    .searchable(
+                        text: $searchText, isPresented: $isSearchPresented, prompt: "Search Agents")
+                    .searchFocused($isSearchFocused)
                     .navigationSplitViewColumnWidth(
                         min: presentation.sidebarWidth.minimum,
                         ideal: presentation.sidebarWidth.ideal,
@@ -218,6 +223,40 @@ struct ConsoleView: View {
                 self.hostFilter = nil
             }
         }
+        .environment(\.consoleCommandRegistry, commandRegistry)
+        .focusedSceneValue(\.consoleCommandTarget, commandTarget)
+    }
+
+    private var commandTarget: ConsoleCommandTarget {
+        ConsoleCommandTarget(
+            registry: commandRegistry,
+            context: {
+                .init(
+                    selection: notificationRouter.path.last,
+                    agents: listPresentation.mode == .flat
+                        ? filteredAgents.map(\.id)
+                        : hostSections.filter { !$0.isCollapsed }.flatMap { $0.agents.map(\.id) },
+                    isSearchFocused: isSearchFocused,
+                    isCovered: hostSheet != nil || isStartingAgent || isShowingSettings,
+                    inputMode: inputMode.mode)
+            },
+            navigate: { id in
+                guard id != notificationRouter.path.last else { return }
+                if commandRegistry.terminal?.isFocused == true
+                    || commandRegistry.composer?.isFocused == true
+                {
+                    keyboardHandoff.arm(for: id)
+                }
+                notificationRouter.path = [id]
+            },
+            focusSearch: {
+                isSearchPresented = true
+                isSearchFocused = true
+            },
+            newAgent: { isStartingAgent = true },
+            settings: { isShowingSettings = true },
+            hosts: { presentHosts() },
+            closeAgent: { notificationRouter.path = [] })
     }
 
     /// The sidebar selection as a projection of the router's path. Setting
