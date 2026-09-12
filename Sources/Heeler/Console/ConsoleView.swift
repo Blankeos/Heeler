@@ -304,17 +304,17 @@ struct ConsoleView: View {
                     activity: activity,
                     keyboardHandoff: keyboardHandoff,
                     keyboardInset: keyboardInset,
-                    // The router's truth, not SwiftUI's appear/disappear:
-                    // only the screen still selected may rebuild its
-                    // terminal on a spurious reappearance. A window whose
-                    // Host channel is live in another window is off stage
-                    // for the terminal too.
-                    isOnStage: { [notificationRouter, sceneRouting] in
-                        notificationRouter.path.last == id
-                            && console.agents.contains(where: { $0.id == id })
-                            && (sceneRouting?.terminalAccess(for: id.hostID) ?? .holds)
-                                == .holds
-                    },
+                    stage: AgentDetailStage(
+                        // The router's truth, not SwiftUI's appear/disappear:
+                        // only the screen still selected may rebuild its
+                        // terminal on a spurious reappearance.
+                        isVisible: { [notificationRouter] in
+                            notificationRouter.path.last == id
+                                && console.agents.contains(where: { $0.id == id })
+                        },
+                        terminalAccess: { [sceneRouting] in
+                            sceneRouting?.terminalAccess(for: id.hostID) ?? .holds
+                        }),
                     onSwitch: { notificationRouter.path = [$0] },
                     onClosed: { notificationRouter.path = [] }
                 )
@@ -858,6 +858,21 @@ private struct ConsoleHostSectionHeaderView: View {
         .accessibilityValue(presentation.accessibilityValue)
         .accessibilityHint(presentation.accessibilityHint)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// The two ways a selected Agent detail can be on stage. A window whose Host
+/// channel is live in another window still shows its detail, so that detail's
+/// presentations keep covering the window's keyboard commands, while its
+/// Attach stays off stage until the window holds the channel again.
+struct AgentDetailStage {
+    /// The detail is the window's selected, still-listed Agent.
+    let isVisible: () -> Bool
+    let terminalAccess: () -> HostTerminalAccess
+
+    /// Attach start, resize and rejoin: visible and holding the Host's channel.
+    func isOnStage() -> Bool {
+        isVisible() && terminalAccess() == .holds
     }
 }
 

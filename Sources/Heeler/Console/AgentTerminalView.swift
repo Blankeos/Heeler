@@ -173,6 +173,9 @@ struct AgentTerminalView: View {
     /// Router truth used to distinguish a real navigation from SwiftUI's
     /// same-screen disappear/appear churn.
     private let isOnStage: () -> Bool
+    /// Whether this screen's presentations gate the window's keyboard
+    /// commands; defaults to `isOnStage`.
+    private let isCommandOnStage: () -> Bool
     /// Opens another Agent from the terminal's switcher strip. The owner moves
     /// the selection, exactly as a tap in the Agent list would.
     private let onSwitch: (ConsoleAgent.ID) -> Void
@@ -265,6 +268,7 @@ struct AgentTerminalView: View {
         keyboardHandoff: TerminalKeyboardHandoff,
         keyboardInset: TerminalKeyboardInset,
         isOnStage: @escaping () -> Bool,
+        isCommandOnStage: (() -> Bool)? = nil,
         onSwitch: @escaping (ConsoleAgent.ID) -> Void,
         onClosed: @escaping () -> Void,
         canOpenTerminal: Bool = false,
@@ -285,6 +289,7 @@ struct AgentTerminalView: View {
         _usesDirectToolsKeyboard = State(
             initialValue: inputMode.isDirect && keyboardHandoff.mode(for: agent.id) == .controls)
         self.isOnStage = isOnStage
+        self.isCommandOnStage = isCommandOnStage ?? isOnStage
         self.onSwitch = onSwitch
         self.onClosed = onClosed
         self.canOpenTerminal = canOpenTerminal
@@ -447,7 +452,7 @@ struct AgentTerminalView: View {
                 || isShowingWorktree || isShowingAttachLinks || closeErrorMessage != nil
                 || attach.pendingPaste != nil || attach.pasteErrorMessage != nil
                 || attach.attachLinkOpenFailure != nil,
-            isOnStage: { @MainActor in isOnStage() },
+            isOnStage: { @MainActor in isCommandOnStage() },
             toggleInputMode: { selectInputMode(inputMode.isDirect ? .composer : .direct) }))
         .task { composer.open() }
     }

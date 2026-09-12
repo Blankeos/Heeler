@@ -13,6 +13,7 @@ struct AgentDetailView: View {
     private let keyboardHandoff: TerminalKeyboardHandoff
     private let keyboardInset: TerminalKeyboardInset
     private let isOnStage: () -> Bool
+    private let isVisible: () -> Bool
     private let onSwitch: (ConsoleAgent.ID) -> Void
     private let onClosed: () -> Void
     @State private var composer: AgentComposerStore
@@ -31,7 +32,7 @@ struct AgentDetailView: View {
         activity: AppActivityCoordinator,
         keyboardHandoff: TerminalKeyboardHandoff,
         keyboardInset: TerminalKeyboardInset,
-        isOnStage: @escaping () -> Bool,
+        stage: AgentDetailStage,
         onSwitch: @escaping (ConsoleAgent.ID) -> Void,
         onClosed: @escaping () -> Void,
         composerStore: AgentComposerStore? = nil,
@@ -46,7 +47,9 @@ struct AgentDetailView: View {
         self.activity = activity
         self.keyboardHandoff = keyboardHandoff
         self.keyboardInset = keyboardInset
+        let isOnStage = stage.isOnStage
         self.isOnStage = isOnStage
+        self.isVisible = stage.isVisible
         self.onSwitch = onSwitch
         self.onClosed = onClosed
         let composer = composerStore ?? console.composerStore(for: agent)
@@ -140,6 +143,11 @@ struct AgentDetailView: View {
                     keyboardInset: keyboardInset,
                     isOnStage: {
                         isOnStage() && openTerminal.shell == nil
+                    },
+                    // A detail that lost its Host channel to another window
+                    // is still on screen, and its sheets still cover commands.
+                    isCommandOnStage: {
+                        isVisible() && openTerminal.shell == nil
                     },
                     onSwitch: onSwitch,
                     onClosed: onClosed,

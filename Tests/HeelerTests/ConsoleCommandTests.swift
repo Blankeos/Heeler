@@ -397,6 +397,58 @@ struct ConsoleCommandRegistryTests {
         #expect(!commands.allows(.newAgent))
     }
 
+    @Test func sheetStillCoversCommandsAfterAnotherWindowTakesTheHost() {
+        // Window A shows this Agent; window B shows another Agent on the same
+        // Host with a Shell Terminal open, so A cannot take the channel back.
+        let windowA = UUID()
+        let windowB = UUID()
+        let claims = [
+            HostTerminalClaim(sceneID: windowA, hostID: agent.hostID, isShellTerminal: false),
+            HostTerminalClaim(sceneID: windowB, hostID: agent.hostID, isShellTerminal: true),
+        ]
+        var reconciled = HostTerminalOwnership()
+        reconciled.reconcile(claims: claims, keySceneID: windowB)
+        let ownership = reconciled
+        let hostID = agent.hostID
+        let stage = AgentDetailStage(
+            isVisible: { true },
+            terminalAccess: {
+                ownership.access(sceneID: windowA, hostID: hostID, claims: claims)
+            })
+        #expect(stage.terminalAccess() == .liveInAnotherWindow(canTakeOver: false))
+        #expect(!stage.isOnStage())
+
+        // A's Rename sheet is still presenting over its visible detail.
+        let registry = ConsoleCommandRegistry()
+        let terminalToken = UUID()
+        var actionCount = 0
+        let didFire: @MainActor () -> Void = { actionCount += 1 }
+        let isVisible = stage.isVisible
+        registerTerminal(registry, token: terminalToken, presenting: true, onStage: { isVisible() })
+        let selection = agent
+        let commands = ConsoleCommandTarget(
+            registry: registry,
+            context: {
+                .init(
+                    selection: selection, agents: [selection], isSearchFocused: false,
+                    isCovered: false, inputMode: .composer)
+            },
+            navigate: { _ in didFire() }, focusSearch: didFire, newAgent: didFire,
+            settings: didFire, hosts: didFire, closeAgent: didFire)
+        for action: ConsoleCommandAction in [.closeAgent, .selectAgent(1), .newAgent] {
+            #expect(!commands.allows(action))
+            commands.perform(action)
+        }
+        #expect(actionCount == 0)
+
+        registerTerminal(registry, token: terminalToken, onStage: { isVisible() })
+        for action: ConsoleCommandAction in [.closeAgent, .selectAgent(1), .newAgent] {
+            #expect(commands.allows(action))
+        }
+        commands.perform(.newAgent)
+        #expect(actionCount == 1)
+    }
+
     @Test func shellPresentationBlocksNavigationAndPresentationCommands() {
         let registry = ConsoleCommandRegistry()
         let shellToken = UUID()
