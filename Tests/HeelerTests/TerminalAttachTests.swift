@@ -1576,6 +1576,120 @@ struct TerminalAttachTests {
         #expect(inset.lastPresentedHeight == 402)
     }
 
+    /// A hardware keyboard attaching while the Composer is focused hides the
+    /// software keyboard without resigning first responder, so the Composer
+    /// stays `.system`. The pin to the last presented height must follow
+    /// that genuine dismissal to zero, or the detail keeps a keyboard-sized
+    /// empty band; the next presentation restores the pin.
+    @MainActor
+    @Test func aConfirmedDismissalReleasesTheSystemPinUntilTheNextPresentation() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { frame in
+            frame.height == 403 ? 383 : 48.5
+        }
+        inset.dismissalConfirmationDelay = .milliseconds(80)
+        func systemInset() -> CGFloat {
+            AgentComposerKeyboardLayout(
+                currentHeight: inset.height,
+                lastPresentedHeight: inset.lastPresentedHeight,
+                presentation: .system,
+                softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed
+            ).contentInset
+        }
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(inset.height == 383)
+        #expect(systemInset() == 383)
+
+        // The sequence captured on the iPad simulator when the hardware
+        // keyboard reconnects: the assistant bar's frame, then will-hide.
+        center.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 1307.5, width: 1032, height: 68.5)])
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        #expect(inset.height == 0)
+        #expect(inset.lastPresentedHeight == 383)
+        // Unconfirmed: a transient will-hide still keeps the pin.
+        #expect(systemInset() == 383)
+
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(inset.isSoftwareKeyboardDismissed)
+        #expect(systemInset() == 0)
+        #expect(inset.lastPresentedHeight == 383)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(systemInset() == 383)
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(inset.height == 383)
+        #expect(systemInset() == 383)
+    }
+
+    /// Swapping input views (Tools→iOS) publishes a will-hide immediately
+    /// followed by a will-show. That hide must not release the pin, or the
+    /// terminal dips to zero for a frame and resizes twice.
+    @MainActor
+    @Test func aWillHideAnsweredByAPresentationKeepsTheSystemPin() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(80)
+        let frame = CGRect(x: 0, y: 973, width: 1032, height: 403)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: frame])
+        try await Task.sleep(for: .milliseconds(120))
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: frame])
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(inset.height == 383)
+    }
+
+    /// Composer Tools installs a zero-height input view, so UIKit really hides
+    /// the keyboard and the dismissal is confirmed. Returning to the system
+    /// keyboard expects it again: the pre-show pin must come back before
+    /// UIKit's frame arrives, and lapse if nothing presents (hardware
+    /// keyboard attached).
+    @MainActor
+    @Test func expectingTheSoftwareKeyboardRestoresThePinUntilItFailsToPresent() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(80)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        try await Task.sleep(for: .milliseconds(120))
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(inset.isSoftwareKeyboardDismissed)
+
+        inset.expectSoftwareKeyboard()
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(AgentComposerKeyboardLayout(
+            currentHeight: inset.height,
+            lastPresentedHeight: inset.lastPresentedHeight,
+            presentation: .system,
+            softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed
+        ).contentInset == 383)
+
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(inset.isSoftwareKeyboardDismissed)
+    }
+
     /// Removing the Chinese candidate row publishes a shorter positive frame
     /// before the system keyboard finishes hiding. The app-owned Tools dock
     /// must retain the complete measurement instead of adopting that transient
@@ -1797,9 +1911,11 @@ struct TerminalAttachTests {
         let toolsAfterUIKitHides = AgentComposerKeyboardLayout(
             currentHeight: 0, lastPresentedHeight: 402,
             presentation: .tools)
+        // The pre-show pin holds only while the dismissal is unconfirmed;
+        // see aConfirmedDismissalReleasesTheSystemPinUntilTheNextPresentation.
         let systemBeforeUIKitShows = AgentComposerKeyboardLayout(
             currentHeight: 0, lastPresentedHeight: 402,
-            presentation: .system)
+            presentation: .system, softwareKeyboardDismissed: false)
 
         #expect(system == AgentComposerKeyboardLayout(
             currentHeight: 402, lastPresentedHeight: 402,

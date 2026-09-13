@@ -16,10 +16,14 @@ struct AgentComposerKeyboardLayout: Equatable {
     let contentInset: CGFloat
     let availableToolsHeight: CGFloat
 
+    /// `softwareKeyboardDismissed` releases the `.system` pin once the
+    /// software keyboard really left while focus stayed (a hardware keyboard
+    /// attached); see ``TerminalKeyboardInset/isSoftwareKeyboardDismissed``.
     init(
         currentHeight: CGFloat,
         lastPresentedHeight: CGFloat,
-        presentation: AgentComposerKeyboardPresentation
+        presentation: AgentComposerKeyboardPresentation,
+        softwareKeyboardDismissed: Bool = false
     ) {
         switch presentation {
         case .hidden:
@@ -27,7 +31,11 @@ struct AgentComposerKeyboardLayout: Equatable {
             contentInset = currentHeight
         case .system:
             availableToolsHeight = lastPresentedHeight
-            contentInset = max(currentHeight, lastPresentedHeight)
+            // The pin bridges transient dips (Tools→iOS pre-show, input-view
+            // swaps), never a confirmed dismissal.
+            contentInset =
+                softwareKeyboardDismissed
+                ? currentHeight : max(currentHeight, lastPresentedHeight)
         case .tools:
             // Only the unmeasured path may invent a height. A positive
             // measurement, including compact landscape footprints below

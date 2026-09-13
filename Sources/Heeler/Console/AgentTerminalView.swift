@@ -804,7 +804,8 @@ struct AgentTerminalView: View {
         return AgentComposerKeyboardLayout(
             currentHeight: keyboardInset.height,
             lastPresentedHeight: keyboardInset.lastPresentedHeight,
-            presentation: composerKeyboardPresentation)
+            presentation: composerKeyboardPresentation,
+            softwareKeyboardDismissed: keyboardInset.isSoftwareKeyboardDismissed)
     }
 
     private var composerActions: AgentComposerActions {
@@ -946,8 +947,11 @@ struct AgentTerminalView: View {
         switch presentation {
         case .tools:
             keyboardInset.pauseHeightCapture()
-        case .hidden, .system:
+        case .hidden:
             keyboardInset.resumeHeightCapture()
+        case .system:
+            keyboardInset.resumeHeightCapture()
+            keyboardInset.expectSoftwareKeyboard()
         }
     }
 

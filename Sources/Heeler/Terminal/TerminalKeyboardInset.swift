@@ -26,6 +26,17 @@ final class TerminalKeyboardInset {
     /// The last complete keyboard footprint. It survives dismissal so an
     /// in-app keyboard can replace UIKit's keyboard without changing layout.
     private(set) var lastPresentedHeight: CGFloat = 0
+    /// Whether the software keyboard really left since it was last presented
+    /// or expected. A hardware keyboard attaching hides the software keyboard
+    /// without moving first responder, so a presentation that pins its inset
+    /// to ``lastPresentedHeight`` would otherwise keep a keyboard-sized gap
+    /// forever. Set only once a will-hide stays unanswered for
+    /// ``dismissalConfirmationDelay``: swapping input views publishes a
+    /// transient will-hide right before the next will-show, and that must
+    /// not drop the pin for a frame.
+    private(set) var isSoftwareKeyboardDismissed = false
+    @ObservationIgnored var dismissalConfirmationDelay = Duration.milliseconds(350)
+    @ObservationIgnored private var dismissalConfirmationTask: Task<Void, Never>?
     /// Long enough to fold a presentation's follow-up frame into the first,
     /// short enough to stay inside the keyboard's own animation.
     private static let coalesceDelay = Duration.milliseconds(60)
@@ -103,6 +114,9 @@ final class TerminalKeyboardInset {
         guard !isHoldingHandoffHeight else { return }
         guard capturesPresentedHeight else { return }
         guard let endFrame, let height = measure(endFrame), height > 0 else { return }
+        dismissalConfirmationTask?.cancel()
+        dismissalConfirmationTask = nil
+        isSoftwareKeyboardDismissed = false
         coalesceTask?.cancel()
         coalesceTask = Task { [weak self] in
             try? await Task.sleep(for: Self.coalesceDelay)
@@ -119,6 +133,31 @@ final class TerminalKeyboardInset {
         coalesceTask?.cancel()
         coalesceTask = nil
         apply(0)
+        confirmDismissalIfUnanswered()
+    }
+
+    /// The app is about to ask UIKit for the software keyboard (Tools→iOS,
+    /// or the Composer taking focus), so the pin to ``lastPresentedHeight``
+    /// applies again until the keyboard's own frame arrives. If nothing
+    /// presents (a hardware keyboard is attached), the dismissal is
+    /// confirmed after the same delay as an unanswered will-hide.
+    func expectSoftwareKeyboard() {
+        isSoftwareKeyboardDismissed = false
+        confirmDismissalIfUnanswered()
+    }
+
+    private func confirmDismissalIfUnanswered() {
+        dismissalConfirmationTask?.cancel()
+        let delay = dismissalConfirmationDelay
+        dismissalConfirmationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.dismissalConfirmationTask = nil
+            // A handoff freezes the inset; its fallback and cancel paths
+            // re-arm this when they commit a dismissal.
+            guard !self.isHoldingHandoffHeight, self.height == 0 else { return }
+            self.isSoftwareKeyboardDismissed = true
+        }
     }
 
     /// Candidate bars publish smaller positive frames while UIKit removes the
@@ -154,7 +193,7 @@ final class TerminalKeyboardInset {
             let shouldApplyDismissal = self.sawDismissDuringResponderHandoff
             self.sawDismissDuringResponderHandoff = false
             if shouldApplyDismissal {
-                self.apply(max(0, currentHeight() ?? 0))
+                self.applyDismissal(currentHeight: currentHeight() ?? 0)
             }
             onFallback(id)
         }
@@ -179,7 +218,7 @@ final class TerminalKeyboardInset {
             let shouldApplyDismissal = self.sawDismissDuringResponderHandoff
             self.sawDismissDuringResponderHandoff = false
             if shouldApplyDismissal, let height = currentHeight() {
-                self.apply(max(0, height))
+                self.applyDismissal(currentHeight: height)
             }
             onFallback(id)
         }
@@ -217,7 +256,14 @@ final class TerminalKeyboardInset {
         let shouldApplyDismissal = sawDismissDuringResponderHandoff
         endResponderHandoff(id)
         if shouldApplyDismissal, let height = currentHeight() {
-            apply(max(0, height))
+            applyDismissal(currentHeight: height)
+        }
+    }
+
+    private func applyDismissal(currentHeight: CGFloat) {
+        apply(max(0, currentHeight))
+        if height == 0 {
+            confirmDismissalIfUnanswered()
         }
     }
 
