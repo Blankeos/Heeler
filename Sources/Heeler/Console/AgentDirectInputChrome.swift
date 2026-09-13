@@ -41,7 +41,6 @@ struct AgentDirectInputChromeContext {
 /// tear it down or leave a hollow gap.
 struct AgentDirectInputChrome: View {
     let context: AgentDirectInputChromeContext
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
 
@@ -80,14 +79,7 @@ struct AgentDirectInputChrome: View {
     }
 
     private var modeControl: TerminalAgentSwitcherModeControl {
-        if horizontalSizeClass == .regular {
-            return .segmented(
-                selection: .direct,
-                select: { mode in
-                    if mode == .composer { interactions.showComposer() }
-                })
-        }
-        return .button(
+        .button(
             systemImage: "square.and.pencil",
             accessibilityLabel: AgentDirectInputPresentation.showComposerAccessibilityLabel,
             accessibilityHint: AgentDirectInputPresentation.showComposerAccessibilityHint,

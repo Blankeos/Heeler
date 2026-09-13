@@ -1054,12 +1054,7 @@ struct AgentTerminalView: View {
     }
 
     private var composerModeControl: TerminalAgentSwitcherModeControl {
-        if horizontalSizeClass == .regular {
-            return .segmented(
-                selection: inputMode.mode,
-                select: selectInputMode)
-        }
-        return .button(
+        .button(
             systemImage: "rectangle.bottomhalf.inset.filled",
             accessibilityLabel: AgentDirectInputPresentation.hideComposerAccessibilityLabel,
             accessibilityHint: AgentDirectInputPresentation.hideComposerAccessibilityHint,

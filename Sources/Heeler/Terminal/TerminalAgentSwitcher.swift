@@ -508,17 +508,14 @@ final class TerminalAgentChip: UIControl {
     }
 }
 
-/// Trailing control that enters or leaves Direct Input without living inside
-/// the chip scroller. Icon on compact width; segmented on regular width.
+/// Trailing icon that enters or leaves Direct Input without living inside
+/// the chip scroller. The same glyph on every width.
 enum TerminalAgentSwitcherModeControl {
     case button(
         systemImage: String,
         accessibilityLabel: String,
         accessibilityHint: String,
         action: () -> Void)
-    case segmented(
-        selection: AgentInputMode,
-        select: (AgentInputMode) -> Void)
 }
 
 /// The resident Agent strip: the chips over their own fill, with the keyboard
@@ -530,7 +527,7 @@ struct TerminalAgentSwitcherRow: View {
     let toggleKeyboard: () -> Void
     var isToolsKeyboardPresented = false
     var switchKeyboard: (() -> Void)?
-    /// Optional Hide Composer / Show Composer (or iPad Composer | Keyboard).
+    /// Optional Hide Composer / Show Composer.
     var modeControl: TerminalAgentSwitcherModeControl?
     /// Matches `UIPasteControl`'s fixed glyph size in the row below. The
     /// optically smaller Composer symbol is corrected at its call site.
@@ -592,19 +589,6 @@ struct TerminalAgentSwitcherRow: View {
                 accessibilityLabel: accessibilityLabel,
                 accessibilityHint: accessibilityHint,
                 action: action)
-        case let .segmented(selection, select):
-            Picker("Input mode", selection: Binding(
-                get: { selection },
-                set: select)
-            ) {
-                ForEach(AgentInputMode.allCases) { mode in
-                    Text(mode.segmentTitle).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 184)
-            .padding(.horizontal, 4)
-            .accessibilityLabel("Input mode")
         }
     }
 
