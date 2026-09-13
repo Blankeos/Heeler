@@ -218,7 +218,7 @@ struct AgentDirectInputChrome: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .frame(maxWidth: .infinity, minHeight: 30, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 30)
     }
 
     private var moreMenu: some View {
