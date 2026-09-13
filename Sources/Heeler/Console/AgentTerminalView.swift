@@ -1052,7 +1052,10 @@ struct AgentTerminalView: View {
                     && directToComposerHandoffID == id
             },
             onFirstResponderRequest: composerFirstResponderRequest,
-            onKeyboardHandoffSettled: composerKeyboardHandoffSettled)
+            onKeyboardHandoffSettled: composerKeyboardHandoffSettled,
+            bracketedPasteEnabled: { [keyboardControl] in
+                keyboardControl.terminal?.usesBracketedPaste ?? false
+            })
     }
 
     /// Attached to the control itself: a popover on the whole detail anchors

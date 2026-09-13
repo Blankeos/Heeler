@@ -16,10 +16,10 @@ extension ComposerDraftOperations {
     func resumeDroppedImagesAfterRejoin() {}
 }
 
-/// Owns Agent detail's local draft and delivery state. Draft edits do not
-/// touch Transport. Send delivers through one `agent.prompt` RPC, except
-/// when Agent Status is Blocked: then it inserts into the live Attach PTY
-/// without Enter.
+/// Owns Agent detail's local draft and delivery state. Send delivers through
+/// one `agent.prompt` RPC, except Blocked (raw insert without Enter) and
+/// custom kinds (framed insert without Enter when the terminal enabled
+/// bracketed paste, otherwise a failure guiding to Direct Input).
 @MainActor
 @Observable
 final class AgentComposerStore: ComposerDraftOperations {
@@ -29,8 +29,8 @@ final class AgentComposerStore: ComposerDraftOperations {
         fileprivate var agentWasWorkingAtSend: Bool
         fileprivate var statusRevisionAtSend: UInt64
         fileprivate var observedWorkingAfterSend: Bool
-        /// Attach-inserted Blocked drafts are acked by the PTY write. They
-        /// do not claim Working/Done from later status pushes.
+        /// Attach-inserted drafts are acked by the PTY write and never claim
+        /// Working/Done from later status pushes.
         fileprivate var tracksAgentProgress: Bool
         fileprivate(set) var state: DeliveryState
     }
@@ -48,8 +48,8 @@ final class AgentComposerStore: ComposerDraftOperations {
         case done
     }
 
-    /// How Send finished. `.deliveredViaAttach` is the view's cue to present
-    /// the tools keyboard so the user can Enter or Esc themselves.
+    /// How Send finished. `.deliveredViaAttach` cues the view to present the
+    /// tools keyboard so the user can Enter or Esc themselves.
     enum SendResult: Equatable {
         case ignored
         case deliveredViaPrompt
@@ -64,14 +64,17 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     private let target: String
     private var agentStatus: AgentStatus
+    /// True when the Agent's `kind` is outside `SupportedAgentKind`, including
+    /// `"unknown"`. Such Agents reject `agent.prompt` with `agent_not_ready`,
+    /// so Send inserts into the live Attach PTY instead of calling the RPC.
+    private(set) var isCustomAgent: Bool
     private var statusRevision: UInt64 = 0
     private let statusUpdates: AsyncStream<ConsoleStore.AgentStatusUpdate>?
     private let prompt: @Sendable (AgentPromptParams) async throws -> Agent
     @ObservationIgnored private var hasOpened = false
     @ObservationIgnored private var statusTask: Task<Void, Never>?
-    /// The detail screen's live Attach writer. Weak: Composer outlives any
-    /// one Attach pipeline (reconnect replacement), and a dead writer must
-    /// fail the Blocked path rather than retain a stale session.
+    /// The detail screen's live Attach writer. Weak so a replaced pipeline
+    /// fails rather than retaining a stale session.
     @ObservationIgnored private weak var attachInput: TerminalInputController?
     /// ADR 0006 picker path. Weak through the bind so staging can keep the
     /// Composer as its draft owner without a retain cycle.
@@ -107,11 +110,13 @@ final class AgentComposerStore: ComposerDraftOperations {
     init(
         target: String,
         initialStatus: AgentStatus = .idle,
+        isCustomAgent: Bool = false,
         statusUpdates: AsyncStream<ConsoleStore.AgentStatusUpdate>? = nil,
         prompt: @escaping @Sendable (AgentPromptParams) async throws -> Agent
     ) {
         self.target = target
         agentStatus = initialStatus
+        self.isCustomAgent = isCustomAgent
         self.statusUpdates = statusUpdates
         self.prompt = prompt
     }
@@ -130,13 +135,28 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     /// VoiceOver hint for the Send button. Pending drops disable Send.
     var sendAccessibilityHint: String {
-        hasPendingDroppedImages
-            ? "Waiting for image…"
-            : "Delivers the complete draft to the Agent"
+        if hasPendingDroppedImages {
+            return "Waiting for image…"
+        }
+        if isCustomAgent {
+            return "Inserts the draft into the terminal without submitting"
+        }
+        return "Delivers the complete draft to the Agent"
     }
 
     var pendingDropPlaceholders: [String] {
         pendingDroppedImages.map(\.placeholder)
+    }
+
+    /// Any `kind` outside `SupportedAgentKind` is custom, including
+    /// `"unknown"`. Exact match on herdr's canonical labels.
+    static func isCustomAgentKind(_ kind: String) -> Bool {
+        SupportedAgentKind(rawValue: kind) == nil
+    }
+
+    /// Updates routing when the snapshot reports a new kind for the same pane.
+    func setCustomAgent(_ isCustom: Bool) {
+        isCustomAgent = isCustom
     }
 
     func replaceDraft(with text: String) {
@@ -273,14 +293,13 @@ final class AgentComposerStore: ComposerDraftOperations {
         }
     }
 
-    /// The already-open Attach PTY writer owned by Agent detail. Blocked
-    /// Send uses the same pipe as the tools keyboard.
+    /// The already-open Attach PTY writer owned by Agent detail.
     func bindAttachInput(_ input: TerminalInputController?) {
         attachInput = input
     }
 
     @discardableResult
-    func send() async -> SendResult {
+    func send(bracketedPaste: Bool = false) async -> SendResult {
         guard canSend, !containsPendingPlaceholderInDraft else { return .ignored }
         let message = Message(
             id: UUID(), text: draft,
@@ -292,11 +311,11 @@ final class AgentComposerStore: ComposerDraftOperations {
         draft = ""
         draftSelection = NSRange(location: 0, length: 0)
         messages.append(message)
-        return await deliver(message.id)
+        return await deliver(message.id, bracketedPaste: bracketedPaste)
     }
 
     @discardableResult
-    func retry(_ id: Message.ID) async -> SendResult {
+    func retry(_ id: Message.ID, bracketedPaste: Bool = false) async -> SendResult {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return .ignored }
         guard case .failed = messages[index].state else { return .ignored }
         messages[index].agentWasWorkingAtSend = agentStatus == .working
@@ -304,7 +323,7 @@ final class AgentComposerStore: ComposerDraftOperations {
         messages[index].observedWorkingAfterSend = false
         messages[index].tracksAgentProgress = true
         messages[index].state = .sending
-        return await deliver(id)
+        return await deliver(id, bracketedPaste: bracketedPaste)
     }
 
     /// Removes a failed echo and restores all of its text to the draft. If
@@ -344,14 +363,17 @@ final class AgentComposerStore: ComposerDraftOperations {
         }
     }
 
-    private func deliver(_ id: Message.ID) async -> SendResult {
+    private func deliver(_ id: Message.ID, bracketedPaste: Bool) async -> SendResult {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return .ignored }
         let text = messages[index].text
         if Self.containsDropPlaceholder(text) {
             return .ignored
         }
+        if isCustomAgent {
+            return deliverCustomThroughAttach(id, text: text, bracketedPaste: bracketedPaste)
+        }
         if agentStatus == .blocked {
-            return deliverThroughAttach(id, text: text)
+            return deliverBlockedThroughAttach(id, text: text)
         }
         let input = attachInput
         let generation = input?.liveGeneration
@@ -368,22 +390,51 @@ final class AgentComposerStore: ComposerDraftOperations {
             return .deliveredViaPrompt
         } catch {
             if Self.isAgentBlocked(error) {
-                return deliverThroughAttach(id, text: text)
+                return deliverBlockedThroughAttach(id, text: text)
+            }
+            if Self.isAgentNotReady(error) {
+                return fail(id, message: Self.agentNotReadyMessage)
             }
             return fail(id, message: Self.message(for: error))
         }
     }
 
-    /// Types the draft into the live Attach PTY without submitting. Matches
+    /// Known blocked Agents: raw insert without Enter or framing. Matches
     /// tools-keyboard writes: UTF-8 bytes, no bracketed paste, no Enter.
     /// Those bytes already cross `TerminalInputController`'s writer, which
     /// indexes them; do not also `record(submitted:)` here.
-    private func deliverThroughAttach(_ id: Message.ID, text: String) -> SendResult {
+    private func deliverBlockedThroughAttach(_ id: Message.ID, text: String) -> SendResult {
         guard !Self.containsDropPlaceholder(text) else { return .ignored }
         guard TerminalTextSafety.containsOnlySafeScalars(text) else {
             return fail(id, message: Self.unsafeTextMessage)
         }
         guard let attachInput, attachInput.insertComposerDraft(text) else {
+            return fail(id, message: Self.missingAttachMessage)
+        }
+        guard let deliveredIndex = messages.firstIndex(where: { $0.id == id }) else {
+            return .ignored
+        }
+        messages[deliveredIndex].tracksAgentProgress = false
+        messages[deliveredIndex].state = .delivered(.acknowledged)
+        return .deliveredViaAttach
+    }
+
+    /// Custom Agents have an unknown TUI: raw LF may read as Enter. Single
+    /// lines insert raw; multiline requires bracketed paste and is framed.
+    /// Otherwise fail with guidance and keep the text. Never auto-Enters.
+    private func deliverCustomThroughAttach(
+        _ id: Message.ID, text: String, bracketedPaste: Bool
+    ) -> SendResult {
+        guard !Self.containsDropPlaceholder(text) else { return .ignored }
+        guard TerminalTextSafety.containsOnlySafeScalars(text) else {
+            return fail(id, message: Self.unsafeTextMessage)
+        }
+        let normalized = TerminalTextSafety.normalizingNewlines(text)
+        if TerminalTextSafety.isMultiline(normalized), !bracketedPaste {
+            return fail(id, message: Self.customMultilineMessage)
+        }
+        guard let attachInput, attachInput.insertCustomDraft(text, bracketedPaste: bracketedPaste)
+        else {
             return fail(id, message: Self.missingAttachMessage)
         }
         guard let deliveredIndex = messages.firstIndex(where: { $0.id == id }) else {
@@ -415,6 +466,20 @@ final class AgentComposerStore: ComposerDraftOperations {
         return false
     }
 
+    /// `agent_not_ready` also covers launch-pending and stopped foregrounds,
+    /// so only the kind check routes to Attach.
+    private static func isAgentNotReady(_ error: any Error) -> Bool {
+        if let apiError = error as? HerdrAPIError {
+            return apiError.code == "agent_not_ready"
+        }
+        if let transportError = error as? TransportError,
+            case .apiRejected(let code, _) = transportError
+        {
+            return code == "agent_not_ready"
+        }
+        return false
+    }
+
     private func progressAfterAcknowledgment(for message: Message) -> AgentProgress {
         if message.observedWorkingAfterSend {
             switch agentStatus {
@@ -440,6 +505,11 @@ final class AgentComposerStore: ComposerDraftOperations {
         "The message could not be sent. Check the connection and retry."
     private static let unsafeTextMessage =
         "The message contains unsafe terminal control characters."
+    /// No auto-insert: the pane may no longer host the Agent.
+    private static let agentNotReadyMessage =
+        "The agent isn't ready for prompts. Use Direct Input to type into the live terminal, or wait and retry."
+    private static let customMultilineMessage =
+        "The terminal doesn't support safe multiline insert. Use Direct Input to paste it, or send a single line."
 
     private var containsPendingPlaceholderInDraft: Bool {
         pendingDroppedImages.contains { draft.contains($0.placeholder) }

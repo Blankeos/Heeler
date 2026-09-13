@@ -30,6 +30,12 @@ Entries reference the issue that motivated them.
   already on screen brings that window forward instead of opening another,
   and a live window resize sends the Host one terminal resize once the
   window settles. (PR #323)
+- Composer supports custom agents reported via `pane.report_agent`: Send
+  inserts the draft into the live Attach PTY without Enter and the tools
+  keyboard submits or cancels. Single lines insert raw; multiline is framed
+  with bracketed paste when the terminal enabled it, otherwise Send fails
+  with Direct Input guidance and keeps the text. Built-in agents that aren't
+  ready keep the draft and guide to Direct Input instead of auto-submitting.
 
 ### Changed
 

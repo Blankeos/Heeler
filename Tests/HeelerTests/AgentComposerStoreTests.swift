@@ -1544,6 +1544,458 @@ struct AgentComposerStoreTests {
                 == [fixture.droppedImageData, pickerData, secondImage])
     }
 
+    @Test func customAgentKindMappingMatchesSupportedCatalog() {
+        for kind in SupportedAgentKind.allCases {
+            #expect(!AgentComposerStore.isCustomAgentKind(kind.rawValue))
+        }
+        #expect(AgentComposerStore.isCustomAgentKind("my-agent"))
+        #expect(AgentComposerStore.isCustomAgentKind("docs-bot"))
+        #expect(AgentComposerStore.isCustomAgentKind("unknown"))
+        #expect(AgentComposerStore.isCustomAgentKind(""))
+        #expect(AgentComposerStore.isCustomAgentKind("Claude"))
+    }
+
+    @Test func customAgentSendInsertsIntoAttachWithoutPrompt() async throws {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "hello custom")
+
+        let result = await store.send()
+
+        #expect(result == .deliveredViaAttach)
+        #expect(store.draft.isEmpty)
+        #expect(store.messages.map(\.text) == ["hello custom"])
+        #expect(store.messages.map(\.state) == [.delivered(.acknowledged)])
+        #expect(writes == [Data("hello custom".utf8)])
+        #expect(!writes.contains { $0.contains(0x0D) })
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func customAgentDeliveredEchoDoesNotClaimProgress() async {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "n")
+
+        await store.send()
+        store.agentStatusDidChange(.working)
+        store.agentStatusDidChange(.done)
+
+        #expect(store.messages.map(\.state) == [.delivered(.acknowledged)])
+        #expect(await transport.agentPromptParams.isEmpty)
+        #expect(writes == [Data("n".utf8)])
+    }
+
+    @Test func customAgentMultilineWithBracketedPasteIsFramed() async {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        let draft = "first\nsecond"
+        store.replaceDraft(with: draft)
+
+        let result = await store.send(bracketedPaste: true)
+
+        #expect(result == .deliveredViaAttach)
+        #expect(
+            writes == [
+                TerminalBracketedPaste.start + Data(draft.utf8)
+                    + TerminalBracketedPaste.end
+            ])
+        #expect(!writes.contains { $0.contains(0x0D) })
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test(arguments: [AgentStatus.idle, .blocked])
+    func customAgentMultilineWithoutBracketedPasteFailsWithGuidance(status: AgentStatus)
+        async throws
+    {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: status, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "first\nsecond")
+
+        let result = await store.send(bracketedPaste: false)
+
+        #expect(result == .failed)
+        #expect(writes.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(message.text == "first\nsecond")
+        #expect(
+            message.state
+                == .failed(
+                    "The terminal doesn't support safe multiline insert. Use Direct Input to paste it, or send a single line."
+                ))
+
+        store.withdrawToDraft(message.id)
+        #expect(store.messages.isEmpty)
+        #expect(store.draft == "first\nsecond")
+    }
+
+    @Test func customAgentMultilineRetryWithBracketedPasteSucceeds() async throws {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "first\nsecond")
+        #expect(await store.send(bracketedPaste: false) == .failed)
+        #expect(writes.isEmpty)
+        let id = try #require(store.messages.first?.id)
+
+        #expect(await store.retry(id, bracketedPaste: true) == .deliveredViaAttach)
+        #expect(
+            writes == [
+                TerminalBracketedPaste.start + Data("first\nsecond".utf8)
+                    + TerminalBracketedPaste.end
+            ])
+        #expect(!writes.contains { $0.contains(0x0D) })
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func customAgentSingleLineIgnoresBracketedMode() async throws {
+        for bracketed in [false, true] {
+            let transport = ScriptedTransport()
+            var writes: [Data] = []
+            let input = TerminalInputController()
+            _ = input.beginSession { writes.append($0) }
+            let store = AgentComposerStore(
+                target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+            ) { params in
+                try await transport.promptAgent(params)
+            }
+            store.bindAttachInput(input)
+            store.replaceDraft(with: "hello custom")
+
+            #expect(await store.send(bracketedPaste: bracketed) == .deliveredViaAttach)
+            #expect(writes == [Data("hello custom".utf8)])
+            #expect(!writes.contains { $0.contains(0x0D) })
+            #expect(await transport.agentPromptParams.isEmpty)
+        }
+    }
+
+    @Test func customAgentMultilineNormalizesCRLFWithoutSubmit() async {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "first\r\nsecond\rlast")
+
+        #expect(await store.send(bracketedPaste: true) == .deliveredViaAttach)
+        #expect(
+            writes == [
+                TerminalBracketedPaste.start + Data("first\nsecond\nlast".utf8)
+                    + TerminalBracketedPaste.end
+            ])
+        #expect(!writes.contains { $0.contains(0x0D) })
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func customAgentStaleAttachFailsWithoutPrompt() async throws {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        let generation = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        input.detachSessionForReplacement()
+        input.endSession(generation)
+
+        store.replaceDraft(with: "hello custom")
+        #expect(await store.send(bracketedPaste: true) == .failed)
+        #expect(writes.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(message.text == "hello custom")
+
+        _ = input.beginSession { writes.append($0) }
+        #expect(await store.retry(message.id, bracketedPaste: true) == .deliveredViaAttach)
+        #expect(writes == [Data("hello custom".utf8)])
+    }
+
+    @Test func customAgentMultilineStaleAttachFailsWithoutPrompt() async throws {
+        let transport = ScriptedTransport()
+        let input = TerminalInputController()
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "first\nsecond")
+
+        #expect(await store.send(bracketedPaste: true) == .failed)
+        #expect(await transport.agentPromptParams.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(
+            message.state
+                == .failed("The message could not be sent. Check the connection and retry."))
+    }
+
+    @Test func customAgentWithoutLiveAttachFailsWithoutPromptAndKeepsRetry() async throws {
+        let transport = ScriptedTransport()
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "hello custom")
+
+        let result = await store.send()
+
+        #expect(result == .failed)
+        #expect(await transport.agentPromptParams.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(
+            message.state
+                == .failed("The message could not be sent. Check the connection and retry.")
+        )
+        #expect(message.text == "hello custom")
+
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        store.bindAttachInput(input)
+        let retry = await store.retry(message.id)
+
+        #expect(retry == .deliveredViaAttach)
+        #expect(store.messages.first?.state == .delivered(.acknowledged))
+        #expect(writes == [Data("hello custom".utf8)])
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func customAgentRejectsUnsafeScalarsWithoutWritingOrPrompt() async throws {
+        let transport = ScriptedTransport()
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "escape\u{1B}[31m")
+
+        let result = await store.send()
+
+        #expect(result == .failed)
+        #expect(writes.isEmpty)
+        #expect(await transport.agentPromptParams.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(
+            message.state
+                == .failed("The message contains unsafe terminal control characters."))
+
+        store.withdrawToDraft(message.id)
+        #expect(store.messages.isEmpty)
+        #expect(store.draft == "escape\u{1B}[31m")
+    }
+
+    @Test func customDeliveredMessageCannotBeRetried() async throws {
+        let transport = ScriptedTransport()
+        let input = TerminalInputController()
+        _ = input.beginSession { _ in }
+        let store = AgentComposerStore(
+            target: "w1:p1", initialStatus: .idle, isCustomAgent: true
+        ) { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "hello custom")
+
+        await store.send()
+        let id = try #require(store.messages.first?.id)
+
+        #expect(await store.retry(id) == .ignored)
+        #expect(await transport.agentPromptParams.isEmpty)
+    }
+
+    @Test func knownAgentNotReadyFailsWithDirectInputGuidance() async throws {
+        let transport = ScriptedTransport()
+        await transport.setAgentPromptFailure(
+            HerdrAPIError(
+                code: "agent_not_ready", message: "agent w1:p1 is not an active named agent"))
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "queue this")
+
+        let result = await store.send()
+
+        #expect(result == .failed)
+        #expect(writes.isEmpty)
+        let message = try #require(store.messages.first)
+        #expect(message.text == "queue this")
+        #expect(
+            message.state
+                == .failed(
+                    "The agent isn't ready for prompts. Use Direct Input to type into the live terminal, or wait and retry."
+                ))
+        #expect(
+            await transport.agentPromptParams == [
+                AgentPromptParams(target: "w1:p1", text: "queue this")
+            ])
+
+        store.withdrawToDraft(message.id)
+        #expect(store.messages.isEmpty)
+        #expect(store.draft == "queue this")
+    }
+
+    @Test func knownAgentNotReadyViaTransportErrorAlsoGuidesToDirectInput() async throws {
+        let transport = ScriptedTransport()
+        await transport.setAgentPromptFailure(
+            TransportError.apiRejected(
+                code: "agent_not_ready", message: "not an active named agent"))
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.replaceDraft(with: "queue this")
+
+        let result = await store.send()
+
+        #expect(result == .failed)
+        let message = try #require(store.messages.first)
+        #expect(
+            message.state
+                == .failed(
+                    "The agent isn't ready for prompts. Use Direct Input to type into the live terminal, or wait and retry."
+                ))
+        #expect(await transport.agentPromptParams.count == 1)
+    }
+
+    @Test func knownAgentNotReadyRetryTriesPromptAgainWithoutAttachWrite() async throws {
+        let transport = ScriptedTransport()
+        await transport.setAgentPromptFailure(
+            HerdrAPIError(
+                code: "agent_not_ready", message: "agent w1:p1 is not an active named agent"))
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "queue this")
+        await store.send()
+        let id = try #require(store.messages.first?.id)
+
+        await transport.setAgentPromptFailure(nil)
+        let retry = await store.retry(id)
+
+        #expect(retry == .deliveredViaPrompt)
+        #expect(store.messages.first?.state == .delivered(.acknowledged))
+        #expect(writes.isEmpty)
+        #expect(await transport.agentPromptParams.count == 2)
+    }
+
+    @Test func flippingToCustomRoutesRetryThroughAttach() async throws {
+        let transport = ScriptedTransport()
+        await transport.setAgentPromptFailure(
+            HerdrAPIError(
+                code: "agent_not_ready", message: "agent w1:p1 is not an active named agent"))
+        var writes: [Data] = []
+        let input = TerminalInputController()
+        _ = input.beginSession { writes.append($0) }
+        let store = AgentComposerStore(target: "w1:p1") { params in
+            try await transport.promptAgent(params)
+        }
+        store.bindAttachInput(input)
+        store.replaceDraft(with: "hello custom")
+        await store.send()
+        let id = try #require(store.messages.first?.id)
+        #expect(await transport.agentPromptParams.count == 1)
+
+        store.setCustomAgent(true)
+        await transport.setAgentPromptFailure(nil)
+        let retry = await store.retry(id)
+
+        #expect(retry == .deliveredViaAttach)
+        #expect(store.messages.first?.state == .delivered(.acknowledged))
+        #expect(writes == [Data("hello custom".utf8)])
+        #expect(await transport.agentPromptParams.count == 1)
+    }
+
+    @Test func consoleOwnershipMarksCustomKindsForAttach() throws {
+        let console = ConsoleStore()
+        let hostID = try #require(
+            UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        let custom = makeAgent(hostID: hostID, status: .idle, kind: "my-agent")
+        let customStore = console.composerStore(for: custom)
+
+        #expect(customStore.isCustomAgent)
+
+        let known = makeAgent(hostID: hostID, status: .idle, kind: "claude")
+        #expect(known.id == custom.id)
+        let sameStore = console.composerStore(for: known)
+
+        #expect(sameStore === customStore)
+        #expect(!sameStore.isCustomAgent)
+    }
+
+    @Test func consoleOwnershipKeepsDraftWhenKindFlips() throws {
+        let console = ConsoleStore()
+        let hostID = try #require(
+            UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        let custom = makeAgent(hostID: hostID, status: .idle, kind: "docs-bot")
+        let store = console.composerStore(for: custom)
+        store.replaceDraft(with: "Keep this local draft")
+
+        let known = makeAgent(hostID: hostID, status: .idle, kind: "claude")
+        let sameStore = console.composerStore(for: known)
+
+        #expect(sameStore === store)
+        #expect(sameStore.draft == "Keep this local draft")
+        #expect(!sameStore.isCustomAgent)
+    }
+
     private static func draftOnlyStore() -> AgentComposerStore {
         AgentComposerStore(target: "w1:p1") { _ in
             throw TransportError.timedOut
@@ -1617,12 +2069,14 @@ struct AgentComposerStoreTests {
         #expect(await condition(), comment)
     }
 
-    private func makeAgent(hostID: Host.ID, status: AgentStatus) -> ConsoleAgent {
+    private func makeAgent(hostID: Host.ID, status: AgentStatus, kind: String = "claude")
+        -> ConsoleAgent
+    {
         ConsoleAgent(
             hostID: hostID,
             hostName: "devbox",
             agent: Agent(
-                terminalID: "term-1", kind: "claude", title: "Task",
+                terminalID: "term-1", kind: kind, title: "Task",
                 status: status, workspaceID: "w1", tabID: "w1:t1", paneID: "w1:p1",
                 cwd: "/work", revision: 1),
             workspaceLabel: "Project",

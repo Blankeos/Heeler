@@ -125,8 +125,13 @@ tools insert into that draft. A draft insertion edits the draft and nothing
 more; delivery is a separate,
 explicit act.
 Authored delivery is one `agent.prompt` request, except when Agent Status is
-Blocked: Send then inserts the draft into Attach without Enter, and the tools
-keyboard submits or cancels. Delivered means the Host accepted the text into
+Blocked (Send inserts the draft into Attach without Enter) or the Agent is a
+custom kind herdr reports via `pane.report_agent` (Send inserts without Enter:
+single lines raw, multiline framed with bracketed paste when the terminal
+enabled it, otherwise a failure guiding to Direct Input). The tools keyboard
+submits or cancels, and the Composer labels custom Send as text insertion. A
+built-in Agent that is not ready (`agent_not_ready`) keeps the draft and
+guides to Direct Input instead of auto-inserting. Delivered means the Host accepted the text into
 the pane — whether the Agent queues or acts on it is the Agent's business,
 and the Composer never claims otherwise.
 Composer remains the default authored-input path on Agent detail. Direct Input
@@ -140,7 +145,11 @@ it is display-only: libghostty renders the complete TUI, owns local scrollback,
 and reports its grid size so the remote PTY resizes with the view, while
 authored input belongs to Composer. Direct Input is the scoped exception that
 lets the system keyboard type that same Attach PTY.
-Delivery is one `agent.prompt` request, except when Agent Status is Blocked, in
+Delivery is one `agent.prompt` request, except when Agent Status is Blocked
+(single-line-safe raw insert without Enter) or the Agent is a custom kind
+herdr reports via `pane.report_agent` (insert without Enter: single lines raw,
+multiline framed when bracketed paste is enabled, otherwise Direct Input
+guidance), in
 which case Composer Send inserts the draft into Attach without Enter and the
 tools keyboard submits or cancels. Only Composer's explicit tools-keyboard
 controls (and Direct Input's shortcut row / system Return) send terminal

@@ -104,6 +104,28 @@ final class TerminalInputController {
         return true
     }
 
+    /// Custom-agent Composer insert. Same pending-line indexing as Blocked,
+    /// but multiline text is framed when the remote enabled DECSET 2004 so an
+    /// unknown TUI reads it as one paste instead of keystrokes. Newlines are
+    /// normalized to LF so a CR cannot smuggle an Enter (0x0D).
+    @discardableResult
+    func insertCustomDraft(_ text: String, bracketedPaste: Bool) -> Bool {
+        guard let writer, !text.isEmpty,
+            TerminalTextSafety.containsOnlySafeScalars(text)
+        else { return false }
+        let normalized = TerminalTextSafety.normalizingNewlines(text)
+        guard !normalized.isEmpty,
+            bracketedPaste || !TerminalTextSafety.isMultiline(normalized)
+        else { return false }
+        write(
+            TerminalBracketedPaste.encode(
+                normalized,
+                bracketed: bracketedPaste && TerminalTextSafety.isMultiline(normalized)),
+            using: writer,
+            source: .composerInsert)
+        return true
+    }
+
     /// The Esc quick key. Distinct from a raw `0x1B` that may start CSI/SS3.
     @discardableResult
     func sendEscapeKey() -> Bool {

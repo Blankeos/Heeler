@@ -322,11 +322,16 @@ final class ConsoleStore {
     /// entry. The Console detail may be replaced by a reconnect placeholder;
     /// retaining the store here keeps its entirely local draft intact.
     func composerStore(for agent: ConsoleAgent) -> AgentComposerStore {
-        if let existing = composerStores[agent.id] { return existing }
+        let isCustom = AgentComposerStore.isCustomAgentKind(agent.agent.kind)
+        if let existing = composerStores[agent.id] {
+            existing.setCustomAgent(isCustom)
+            return existing
+        }
         let hostID = agent.hostID
         let store = AgentComposerStore(
             target: agent.agent.paneID,
             initialStatus: agent.agent.status,
+            isCustomAgent: isCustom,
             statusUpdates: agentStatusUpdates(for: agent.id)
         ) { [weak self] params in
             guard let self else { throw TransportError.cancelled }

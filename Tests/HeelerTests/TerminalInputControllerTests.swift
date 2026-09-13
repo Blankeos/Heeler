@@ -331,6 +331,80 @@ struct TerminalInputControllerTests {
         #expect(
             controller.userMessageIndex.entries.map(\.rawText) == ["[review] do it"])
     }
+
+    @Test func customDraftSingleLineNeedsNoFraming() {
+        for bracketed in [false, true] {
+            var writes: [Data] = []
+            let controller = TerminalInputController()
+            _ = controller.beginSession { writes.append($0) }
+
+            #expect(controller.insertCustomDraft("hello custom", bracketedPaste: bracketed))
+            #expect(writes == [Data("hello custom".utf8)])
+            #expect(!writes.contains { $0.contains(0x0D) })
+        }
+    }
+
+    @Test func customDraftMultilineIsFramedOnlyWhenBracketed() {
+        var writes: [Data] = []
+        let controller = TerminalInputController()
+        _ = controller.beginSession { writes.append($0) }
+
+        #expect(controller.insertCustomDraft("first\nsecond", bracketedPaste: true))
+        #expect(
+            writes == [
+                TerminalBracketedPaste.start + Data("first\nsecond".utf8)
+                    + TerminalBracketedPaste.end
+            ])
+        #expect(!writes.contains { $0.contains(0x0D) })
+    }
+
+    @Test func customDraftMultilineWithoutBracketedPasteDoesNotWrite() {
+        let controller = TerminalInputController()
+        var writes: [Data] = []
+        _ = controller.beginSession { writes.append($0) }
+
+        for text in ["first\nsecond", "first\rsecond", "first\r\nsecond"] {
+            #expect(!controller.insertCustomDraft(text, bracketedPaste: false))
+        }
+        #expect(writes.isEmpty)
+    }
+
+    @Test func customDraftNormalizesCRLFWithoutSubmit() {
+        var writes: [Data] = []
+        let controller = TerminalInputController()
+        _ = controller.beginSession { writes.append($0) }
+
+        #expect(controller.insertCustomDraft("first\r\nsecond\rlast", bracketedPaste: true))
+        #expect(
+            writes == [
+                TerminalBracketedPaste.start + Data("first\nsecond\nlast".utf8)
+                    + TerminalBracketedPaste.end
+            ])
+        #expect(!writes.contains { $0.contains(0x0D) })
+    }
+
+    @Test func customDraftRejectsUnsafeScalarsAndNeedsLiveSession() {
+        var writes: [Data] = []
+        let controller = TerminalInputController()
+        _ = controller.beginSession { writes.append($0) }
+
+        #expect(!controller.insertCustomDraft("escape\u{1B}[31m", bracketedPaste: true))
+        #expect(writes.isEmpty)
+
+        let detached = TerminalInputController()
+        #expect(!detached.insertCustomDraft("hello", bracketedPaste: true))
+    }
+
+    @Test func customDraftEscapeCancelsPendingLine() {
+        let controller = TerminalInputController()
+        _ = controller.beginSession { _ in }
+
+        #expect(controller.insertCustomDraft("first\nsecond", bracketedPaste: true))
+        #expect(controller.userMessageIndex.entries.isEmpty)
+        #expect(controller.sendEscapeKey())
+        #expect(controller.send(Data([0x0D])))
+        #expect(controller.userMessageIndex.entries.isEmpty)
+    }
 }
 
 @Suite("Terminal text safety")

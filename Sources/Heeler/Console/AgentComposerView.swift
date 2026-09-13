@@ -90,9 +90,9 @@ struct AgentComposerLinkPresentation: Equatable {
 
 /// The native, local-first input surface beneath the live terminal. Drafting
 /// stays on device; Send emits one `agent.prompt` request except when Agent
-/// Status is Blocked, in which case it inserts the draft into Attach without
-/// Enter and presents the tools keyboard. Explicit tool-keyboard controls
-/// send terminal sequences through Attach.
+/// Status is Blocked or the Agent is custom, in which case it inserts the
+/// draft into Attach without Enter and presents the tools keyboard. Explicit
+/// tool-keyboard controls send terminal sequences through Attach.
 struct AgentComposerView: View {
     let store: AgentComposerStore
     let status: AgentStatus
@@ -126,6 +126,9 @@ struct AgentComposerView: View {
     /// Drop is Composer-only. Defaults to Composer so existing call sites stay
     /// a drop target; Direct Input must pass `.direct` to keep this inert.
     var inputMode: AgentInputMode = .composer
+    /// Live DECSET 2004 state from the Ghostty surface. Custom Send reads it
+    /// at tap time so multiline framing matches Direct Input.
+    var bracketedPasteEnabled: () -> Bool = { false }
     @State private var isInputFocused = false
     /// An explicit dismissal hides suggestions for the current trigger token;
     /// removing the token arms them again.
@@ -183,6 +186,12 @@ struct AgentComposerView: View {
                         .frame(minHeight: 36, alignment: .topLeading)
                         .accessibilityElement(children: .contain)
 
+                        if store.isCustomAgent {
+                            Text("Send inserts text — press Enter in tools to submit.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         if let failure = latestFailure {
                             VStack(alignment: .leading, spacing: 6) {
                                 Label(failure.detail, systemImage: "exclamationmark.triangle")
@@ -191,7 +200,13 @@ struct AgentComposerView: View {
                                     .lineLimit(2)
                                 HStack(spacing: 8) {
                                     Button("Retry") {
-                                        Task { await deliverDraft { await store.retry(failure.id) } }
+                                        Task {
+                                            await deliverDraft {
+                                                await store.retry(
+                                                    failure.id,
+                                                    bracketedPaste: bracketedPasteEnabled())
+                                            }
+                                        }
                                     }
                                     Button("Edit Draft") {
                                         store.withdrawToDraft(failure.id)
@@ -268,7 +283,11 @@ struct AgentComposerView: View {
                                 isEnabled: store.canSend,
                                 accessibilityHint: store.sendAccessibilityHint
                             ) {
-                                Task { await deliverDraft { await store.send() } }
+                                Task {
+                                    await deliverDraft {
+                                        await store.send(bracketedPaste: bracketedPasteEnabled())
+                                    }
+                                }
                             }
                         }
                     }
@@ -311,7 +330,7 @@ struct AgentComposerView: View {
             agentID: switcher.selectedID,
             isFocused: isInputFocused,
             hasDraft: { store.canSend },
-            send: { await deliverDraft { await store.send() } }))
+            send: { await deliverDraft { await store.send(bracketedPaste: bracketedPasteEnabled()) } }))
         .onAppear {
             guard let selectedID = switcher.selectedID,
                   keyboardHandoff.consume(selectedID)
@@ -391,7 +410,7 @@ struct AgentComposerView: View {
         keyboardPresentation = presentation
     }
 
-    /// Blocked delivery types into Attach without Enter; the tools keyboard
+    /// Attach delivery types into Attach without Enter; the tools keyboard
     /// is what submits or cancels.
     private func deliverDraft(
         _ deliver: () async -> AgentComposerStore.SendResult
