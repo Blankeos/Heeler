@@ -5,6 +5,14 @@ enum AgentComposerKeyboardPresentation: Equatable {
     case hidden
     case system
     case tools
+
+    /// iPad draws its keyboard toolbar (input switcher, dictation, emoji,
+    /// IME candidates) under any first responder whose software keyboard is
+    /// suppressed, so the tools dock there lets the Composer give up first
+    /// responder instead of hiding the keyboard in place. iPhone shows no
+    /// such bar and keeps the in-place switch, which preserves the IME
+    /// session across Tools and back.
+    @MainActor static let toolsDockReleasesFocus = UIDevice.current.userInterfaceIdiom == .pad
 }
 
 struct AgentComposerKeyboardLayout: Equatable {
@@ -128,6 +136,10 @@ struct AgentComposerView: View {
 
     private var isToolsKeyboardPresented: Bool {
         keyboardPresentation == .tools
+    }
+
+    private var toolsDockReleasesFocus: Bool {
+        AgentComposerKeyboardPresentation.toolsDockReleasesFocus
     }
 
     var body: some View {
@@ -311,10 +323,12 @@ struct AgentComposerView: View {
         }
         .onChange(of: isInputFocused) { _, isFocused in
             if isFocused {
-                if keyboardPresentation != .tools {
+                // A tap into the text while the iPad tools dock is up asks
+                // for the system keyboard; on iPhone the dock keeps the caret.
+                if keyboardPresentation != .tools || toolsDockReleasesFocus {
                     setKeyboardPresentation(.system)
                 }
-            } else {
+            } else if !(toolsDockReleasesFocus && keyboardPresentation == .tools) {
                 setKeyboardPresentation(.hidden)
             }
         }
@@ -369,7 +383,7 @@ struct AgentComposerView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             setKeyboardPresentation(expectsSystemKeyboard ? .system : .tools)
-            isInputFocused = true
+            isInputFocused = expectsSystemKeyboard || !toolsDockReleasesFocus
         }
     }
 
@@ -390,7 +404,7 @@ struct AgentComposerView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             setKeyboardPresentation(.tools)
-            isInputFocused = true
+            isInputFocused = !toolsDockReleasesFocus
         }
     }
 
@@ -708,6 +722,10 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
 /// measured keyboard footprint behind it, so removing the candidate row never
 /// exposes an intermediate gap.
 final class AgentComposerUITextView: UITextView {
+    static var toolsDockReleasesFocus: Bool {
+        AgentComposerKeyboardPresentation.toolsDockReleasesFocus
+    }
+
     private lazy var suppressedSoftKeyboard = TerminalSuppressedSoftKeyboardView()
     private var keyboardPresentation: AgentComposerKeyboardPresentation = .hidden
     var onKeyboardHandoffSettled: ((UUID) -> Void)?
@@ -775,6 +793,9 @@ final class AgentComposerUITextView: UITextView {
             inputView = nil
         }
         guard isFirstResponder, inputView !== previousInputView else { return }
+        // On iPad the tools dock resigns instead (see `toolsDockReleasesFocus`);
+        // reloading here would flash the suppressed keyboard's toolbar first.
+        if presentation == .tools, Self.toolsDockReleasesFocus { return }
         UIView.performWithoutAnimation {
             reloadInputViews()
         }

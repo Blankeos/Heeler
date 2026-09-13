@@ -35,6 +35,8 @@ Entries reference the issue that motivated them.
 
 - The custom Terminal, Agent, and Skills keyboards fill iPad width instead
   of an iPhone-sized well.
+- On iPad the Composer's tools dock no longer leaves the system keyboard's
+  floating candidate and prediction bar over the dock.
 - iPad adapts its two-column Console to landscape and portrait, with a Show Agents
   action in empty detail, form sheets for Hosts, Settings, New Agent, Skills,
   Rename, Snippets, and Worktree, plus Attach Links popovers.
