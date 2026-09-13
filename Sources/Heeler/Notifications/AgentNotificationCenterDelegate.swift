@@ -2,8 +2,9 @@ import Foundation
 import UserNotifications
 
 /// Thin UNUserNotificationCenter delegate (#74). Every decision is pure and
-/// unit-tested — `AgentNotificationRouting` resolves the push, the MainActor
-/// `AgentNotificationRouter` holds the navigation state — because real iOS
+/// unit-tested — `AgentNotificationRouting` resolves the push,
+/// `AgentDeepLinkPolicy` picks the window, and each window's MainActor
+/// `AgentNotificationRouter` holds its navigation state — because real iOS
 /// notification presentation is not automatable (spec #68).
 ///
 /// The completion-handler forms are deliberate: UIKit invokes these callbacks
@@ -15,16 +16,16 @@ import UserNotifications
 final class AgentNotificationCenterDelegate: NSObject, UNUserNotificationCenterDelegate,
     @unchecked Sendable
 {
-    private let router: AgentNotificationRouter
+    private let directory: AgentSceneDirectory
     private let loadKeys: @Sendable () -> [NotificationKeyRecord]
 
     init(
-        router: AgentNotificationRouter,
+        directory: AgentSceneDirectory,
         loadKeys: @escaping @Sendable () -> [NotificationKeyRecord] = {
             (try? NotificationKeyStore().allRecords()) ?? []
         }
     ) {
-        self.router = router
+        self.directory = directory
         self.loadKeys = loadKeys
     }
 
@@ -42,8 +43,8 @@ final class AgentNotificationCenterDelegate: NSObject, UNUserNotificationCenterD
         completionHandler([])
     }
 
-    /// A tap (the default action) deep-links to the Agent's Attach; explicit
-    /// dismissal routes nowhere.
+    /// A tap (the default action) deep-links to the Agent's Attach through
+    /// the single-window rule; explicit dismissal routes nowhere.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -56,8 +57,8 @@ final class AgentNotificationCenterDelegate: NSObject, UNUserNotificationCenterD
                 userInfo: response.notification.request.content.userInfo, keys: loadKeys())
             : nil
         let complete = UncheckedSendable(completionHandler)
-        Task { @MainActor [router] in
-            if isDefaultTap { router.open(target) }
+        Task { @MainActor [directory] in
+            if isDefaultTap { directory.open(target) }
             complete.value()
         }
     }

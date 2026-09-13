@@ -173,6 +173,9 @@ struct AgentTerminalView: View {
     /// Router truth used to distinguish a real navigation from SwiftUI's
     /// same-screen disappear/appear churn.
     private let isOnStage: () -> Bool
+    /// Whether this screen's presentations gate the window's keyboard
+    /// commands; defaults to `isOnStage`.
+    private let isCommandOnStage: () -> Bool
     /// Opens another Agent from the terminal's switcher strip. The owner moves
     /// the selection, exactly as a tap in the Agent list would.
     private let onSwitch: (ConsoleAgent.ID) -> Void
@@ -232,22 +235,28 @@ struct AgentTerminalView: View {
     @State private var isRenamingWorkspace = false
     @State private var isShowingWorktree = false
     @State private var worktreeStore: WorktreeDetailStore?
-    @State private var isShowingAttachLinks = false
+    /// The control that opened Attach Links, which its popover anchors to.
+    @State private var attachLinksOrigin: AttachLinksOrigin?
     @State private var closeErrorMessage: String?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// The scene root's window, known before this screen first renders.
+    @Environment(\.sceneWindow) private var sceneWindow
+    /// This view's own window, for hosts without a scene root.
+    @State private var mountedWindow = WindowReference()
+    /// Nil outside a scene root, where this screen always holds its Host's
+    /// terminal channel.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     private var isDirectInput: Bool { inputMode.isDirect }
 
+    /// The status bar height of the window this terminal is in. Another
+    /// window's inset is wrong under Stage Manager, where windows sit at
+    /// different distances from the status bar.
     private var statusBarInset: CGFloat {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .safeAreaInsets.top ?? 0
+        (sceneWindow?.window ?? mountedWindow.window)?.safeAreaInsets.top ?? 0
     }
 
     init(
@@ -260,6 +269,7 @@ struct AgentTerminalView: View {
         keyboardHandoff: TerminalKeyboardHandoff,
         keyboardInset: TerminalKeyboardInset,
         isOnStage: @escaping () -> Bool,
+        isCommandOnStage: (() -> Bool)? = nil,
         onSwitch: @escaping (ConsoleAgent.ID) -> Void,
         onClosed: @escaping () -> Void,
         canOpenTerminal: Bool = false,
@@ -280,6 +290,7 @@ struct AgentTerminalView: View {
         _usesDirectToolsKeyboard = State(
             initialValue: inputMode.isDirect && keyboardHandoff.mode(for: agent.id) == .controls)
         self.isOnStage = isOnStage
+        self.isCommandOnStage = isCommandOnStage ?? isOnStage
         self.onSwitch = onSwitch
         self.onClosed = onClosed
         self.canOpenTerminal = canOpenTerminal
@@ -382,6 +393,12 @@ struct AgentTerminalView: View {
             } else {
                 keyboardInset.resumeHeightCapture()
             }
+            // An iPad tools dock stands without a responder; the token is
+            // still consumed so it cannot raise a later surface.
+            if usesDirectToolsKeyboard, TerminalKeyboardMode.controlsReleaseFirstResponder {
+                _ = keyboardHandoff.consume(agent.id)
+                return false
+            }
             if keyboardHandoff.consume(agent.id) {
                 directKeyboardIntent.setWantsKeyboard(true)
                 return true
@@ -433,6 +450,17 @@ struct AgentTerminalView: View {
         // otherwise replacing the system keyboard changes the proposal that
         // reaches Ghostty even when our explicit inset is unchanged.
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .modifier(ConsoleTerminalCommandRegistration(
+            agentID: agent.id,
+            isFocused: keyboardControl.isFirstResponder,
+            isPresenting: isSelectingPhoto || isSelectingFile || isConfirmingClose
+                || isStartingAgent || isManagingSnippets || isShowingSkillsPicker
+                || isRenamingAgent || viewingSkill != nil || isRenamingWorkspace
+                || isShowingWorktree || attachLinksOrigin != nil || closeErrorMessage != nil
+                || attach.pendingPaste != nil || attach.pasteErrorMessage != nil
+                || attach.attachLinkOpenFailure != nil,
+            isOnStage: { @MainActor in isCommandOnStage() },
+            toggleInputMode: { selectInputMode(inputMode.isDirect ? .composer : .direct) }))
         .task { composer.open() }
     }
 
@@ -449,13 +477,6 @@ struct AgentTerminalView: View {
             guard case .success(let url) = result else { return }
             attach.staging.begin(.file(url))
         }
-        .popover(isPresented: $isShowingAttachLinks) {
-            AttachLinksView(
-                links: attach.attachLinks,
-                open: { link in openAttachLink(link) },
-                copy: { link in UIPasteboard.general.string = link.target })
-            .presentationCompactAdaptation(.sheet)
-        }
         .sheet(isPresented: $isStartingAgent) {
             // StartAgentView brings its own NavigationStack.
             StartAgentView(
@@ -466,11 +487,17 @@ struct AgentTerminalView: View {
                     workspaceID: agent.agent.workspaceID,
                     cwd: agent.agent.cwd),
                 onStarted: { switchToAgent($0) })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         // Presenting this takes the keyboard down and dismissing brings it
         // back; see `allowsKeyboardActivation` in HeelerTerminalView.
         .sheet(isPresented: $isManagingSnippets) {
             SnippetsManagementView(store: terminal.snippets)
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         // Same keyboard choreography as the Snippets sheet above. The picker
         // shares the tools keyboard's SkillsPaneStore, so both surfaces load
@@ -483,6 +510,9 @@ struct AgentTerminalView: View {
                     readSkill: { [console, agent] skill in
                         try await console.readSkillFile(path: skill.path, on: agent.hostID)
                     })
+                .modifier(ConsoleSheetPresentationModifier(
+                    presentation: ConsoleSheetPresentation(
+                        horizontalSizeClass: horizontalSizeClass)))
             }
         }
         // Same keyboard choreography as the Snippets sheet above.
@@ -490,6 +520,9 @@ struct AgentTerminalView: View {
             SkillContentSheet(skill: skill) { [console, agent] in
                 try await console.readSkillFile(path: skill.path, on: agent.hostID)
             }
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isRenamingAgent) {
             RenameSheetView(
@@ -501,6 +534,9 @@ struct AgentTerminalView: View {
                     try await console.renameAgent(
                         agent.agent.paneID, name: name, on: agent.hostID)
                 })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isRenamingWorkspace) {
             RenameSheetView(
@@ -511,12 +547,18 @@ struct AgentTerminalView: View {
                     try await console.renameWorkspace(
                         agent.agent.workspaceID, label: label, on: agent.hostID)
                 })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .sheet(isPresented: $isShowingWorktree) {
             if let worktreeStore {
                 WorktreeDetailView(store: worktreeStore) { _ in
                     isShowingWorktree = false
                 }
+                .modifier(ConsoleSheetPresentationModifier(
+                    presentation: ConsoleSheetPresentation(
+                        horizontalSizeClass: horizontalSizeClass)))
             }
         }
         .sheet(
@@ -687,9 +729,16 @@ struct AgentTerminalView: View {
         }
         #endif
         .onChange(of: keyboardControl.isFirstResponder) { _, isUp in
+            guard isDirectInput else { return }
+            if isUp {
+                // On iPad the tools dock stands without a responder, so a tap
+                // on the terminal's input row asks for the system keyboard.
+                guard usesDirectToolsKeyboard, toolsDockReleasesFocus else { return }
+                showDirectSystemKeyboard()
+                return
+            }
             // Tools→iOS keeps first responder across the coalesce window; a
             // real dismiss resigns and must drop the pre-show `.system` hold.
-            guard isDirectInput, !isUp else { return }
             expectsDirectSystemKeyboard = false
         }
         .onChange(of: keyboardInset.height) { _, height in
@@ -768,7 +817,8 @@ struct AgentTerminalView: View {
         return AgentComposerKeyboardLayout(
             currentHeight: keyboardInset.height,
             lastPresentedHeight: keyboardInset.lastPresentedHeight,
-            presentation: composerKeyboardPresentation)
+            presentation: composerKeyboardPresentation,
+            softwareKeyboardDismissed: keyboardInset.isSoftwareKeyboardDismissed)
     }
 
     private var composerActions: AgentComposerActions {
@@ -777,7 +827,7 @@ struct AgentTerminalView: View {
             attachLinkCount: attach.attachLinks.count,
             addImage: { isSelectingPhoto = true },
             addFile: { isSelectingFile = true },
-            showAttachLinks: { isShowingAttachLinks = true },
+            showAttachLinks: { attachLinksOrigin = .composerChip },
             openTerminal: canOpenTerminal ? openTerminal : nil,
             isOpeningTerminal: isOpeningTerminal,
             startAgent: { isStartingAgent = true },
@@ -875,6 +925,16 @@ struct AgentTerminalView: View {
         // bar appearance. Its content stays hidden, while this inset keeps
         // terminal output below the system clock.
         .padding(.top, statusBarInset)
+        .background {
+            // Keyboard geometry and the status bar inset follow this view's
+            // own window, not whichever window of the app is key.
+            WindowReader { window in
+                keyboardInset.attach(to: window)
+                mountedWindow.attach(window)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .background(
             terminal.themes.selection(for: colorScheme)
                 .surfaceBackground(for: colorScheme))
@@ -900,8 +960,11 @@ struct AgentTerminalView: View {
         switch presentation {
         case .tools:
             keyboardInset.pauseHeightCapture()
-        case .hidden, .system:
+        case .hidden:
             keyboardInset.resumeHeightCapture()
+        case .system:
+            keyboardInset.resumeHeightCapture()
+            keyboardInset.expectSoftwareKeyboard()
         }
     }
 
@@ -977,6 +1040,7 @@ struct AgentTerminalView: View {
             keyboardHandoff: keyboardHandoff,
             keyboardHeight: composerKeyboardLayout.availableToolsHeight,
             actions: composerActions,
+            attachLinksPopover: attachLinksPopover(from: .composerChip),
             skills: skills,
             keyboardPresentation: $composerKeyboardPresentation,
             prepareKeyboardPresentation: prepareComposerKeyboardPresentation,
@@ -991,13 +1055,19 @@ struct AgentTerminalView: View {
             onKeyboardHandoffSettled: composerKeyboardHandoffSettled)
     }
 
+    /// Attached to the control itself: a popover on the whole detail anchors
+    /// to the detail's bounds and floats detached from the chip on iPad.
+    private func attachLinksPopover(from origin: AttachLinksOrigin) -> AttachLinksPopover {
+        AttachLinksPopover(
+            origin: origin,
+            presentedOrigin: $attachLinksOrigin,
+            links: attach.attachLinks,
+            open: { link in openAttachLink(link) },
+            copy: { link in UIPasteboard.general.string = link.target })
+    }
+
     private var composerModeControl: TerminalAgentSwitcherModeControl {
-        if horizontalSizeClass == .regular {
-            return .segmented(
-                selection: inputMode.mode,
-                select: selectInputMode)
-        }
-        return .button(
+        .button(
             systemImage: "rectangle.bottomhalf.inset.filled",
             accessibilityLabel: AgentDirectInputPresentation.hideComposerAccessibilityLabel,
             accessibilityHint: AgentDirectInputPresentation.hideComposerAccessibilityHint,
@@ -1172,11 +1242,7 @@ struct AgentTerminalView: View {
 
     private func currentWindowKeyboardHeight() -> CGFloat? {
         guard let window = keyboardControl.terminal?.window else { return nil }
-        let frame = window.bounds.intersection(window.keyboardLayoutGuide.layoutFrame)
-        let includesBottomSafeArea = abs(frame.maxY - window.bounds.maxY) <= 1
-        return TerminalKeyboardInset.insetHeight(
-            covered: frame.height,
-            bottomSafeArea: includesBottomSafeArea ? window.safeAreaInsets.bottom : 0)
+        return TerminalKeyboardInset.layoutGuideHeight(in: window)
     }
 
     private func cancelKeyboardHandoffs() {
@@ -1208,7 +1274,8 @@ struct AgentTerminalView: View {
         if composerToDirectHandoffID == id {
             composerToDirectHandoffID = nil
         }
-        keyboardInset.endResponderHandoff(id)
+        keyboardInset.endResponderHandoff(
+            id, currentHeight: currentWindowKeyboardHeight)
     }
 
     private func restoreComposerThen(_ action: @escaping () -> Void) {
@@ -1242,28 +1309,49 @@ struct AgentTerminalView: View {
         }
     }
 
+    /// See `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+    private var toolsDockReleasesFocus: Bool {
+        TerminalKeyboardMode.controlsReleaseFirstResponder
+    }
+
     private func switchDirectKeyboard() {
         guard isOnStage() else { return }
-        let enteringTools = !usesDirectToolsKeyboard
+        guard !usesDirectToolsKeyboard else {
+            showDirectSystemKeyboard()
+            return
+        }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            if enteringTools {
-                expectsDirectSystemKeyboard = false
-                keyboardInset.pauseHeightCapture()
-                usesDirectToolsKeyboard = true
-                keyboardControl.setKeyboardMode(.controls)
-            } else {
-                // Hold `.system` through UIKit's coalesce window so content
-                // inset stays at lastPresentedHeight instead of dipping to zero.
-                expectsDirectSystemKeyboard = true
-                keyboardInset.resumeHeightCapture()
-                usesDirectToolsKeyboard = false
-                keyboardControl.setKeyboardMode(.text)
-            }
+            expectsDirectSystemKeyboard = false
+            keyboardInset.pauseHeightCapture()
+            usesDirectToolsKeyboard = true
+            keyboardControl.setKeyboardMode(.controls)
         }
-        if enteringTools {
+        if toolsDockReleasesFocus {
+            directKeyboardIntent.setWantsKeyboard(false)
+            keyboardControl.dismissKeyboard()
+        } else {
             directKeyboardIntent.setWantsKeyboard(true)
+            keyboardControl.requestKeyboard()
+        }
+    }
+
+    /// Tools → iOS keyboard. Holds `.system` through UIKit's coalesce window
+    /// so content inset stays at lastPresentedHeight instead of dipping to
+    /// zero. On iPad the dock released first responder, so the keyboard is
+    /// requested again unless the tap that raised it already did.
+    private func showDirectSystemKeyboard() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            expectsDirectSystemKeyboard = true
+            keyboardInset.resumeHeightCapture()
+            usesDirectToolsKeyboard = false
+            keyboardControl.setKeyboardMode(.text)
+        }
+        directKeyboardIntent.setWantsKeyboard(true)
+        if toolsDockReleasesFocus, !keyboardControl.isFirstResponder {
             keyboardControl.requestKeyboard()
         }
     }
@@ -1361,7 +1449,7 @@ struct AgentTerminalView: View {
            let links = AgentComposerLinkPresentation(count: attach.attachLinks.count)
         {
             Button {
-                isShowingAttachLinks = true
+                attachLinksOrigin = .floatingButton
             } label: {
                 Image(systemName: "link")
                     .font(.system(size: 15, weight: .semibold))
@@ -1374,6 +1462,7 @@ struct AgentTerminalView: View {
             .hoverEffect(.highlight)
             .accessibilityLabel("Attach Links")
             .accessibilityValue(links.accessibilityValue)
+            .modifier(attachLinksPopover(from: .floatingButton))
             .padding(.trailing, MessageJumpPlacement.trailingPadding)
             .padding(.bottom, 8)
         }
@@ -1419,7 +1508,25 @@ struct AgentTerminalView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
+        if let away = LiveInAnotherWindowPresentation(
+            access: sceneRouting?.terminalAccess(for: agent.hostID) ?? .holds)
+        {
+            // Ahead of the terminal status: this window released its Attach
+            // on purpose, so its stopped terminal says nothing useful.
+            TerminalStatusDialog(
+                glyph: .symbol(away.systemImage),
+                title: away.title,
+                message: away.message,
+                palette: themePalette
+            ) {
+                if away.showsTakeOver {
+                    Button(LiveInAnotherWindowPresentation.takeOverTitle) {
+                        sceneRouting?.takeOverTerminal(for: agent.hostID)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        } else if let presentation = TerminalStatusPresentation(status: attach.terminalStatus) {
             switch presentation.kind {
             case .connecting:
                 // No dim: a reattach would otherwise flash the whole screen dark.
@@ -1541,6 +1648,43 @@ private struct AgentEdgeBackGesture: View {
                         dismiss()
                     })
             .accessibilityHidden(true)
+    }
+}
+
+/// The control an Attach Links popover belongs to. Only the control that
+/// opened the list presents it, so a mode switch that briefly shows both
+/// controls cannot present the list twice.
+enum AttachLinksOrigin: Equatable {
+    case composerChip
+    case floatingButton
+
+    func presents(_ presented: AttachLinksOrigin?) -> Bool {
+        presented == self
+    }
+
+    /// The presented origin after this control's popover reports dismissal.
+    func dismissing(_ presented: AttachLinksOrigin?) -> AttachLinksOrigin? {
+        presented == self ? nil : presented
+    }
+}
+
+struct AttachLinksPopover: ViewModifier {
+    let origin: AttachLinksOrigin
+    @Binding var presentedOrigin: AttachLinksOrigin?
+    let links: [AttachLink]
+    let open: (AttachLink) -> Void
+    let copy: (AttachLink) -> Void
+
+    func body(content: Content) -> some View {
+        content.popover(
+            isPresented: Binding(
+                get: { origin.presents(presentedOrigin) },
+                set: { if !$0 { presentedOrigin = origin.dismissing(presentedOrigin) } })
+        ) {
+            AttachLinksView(links: links, open: open, copy: copy)
+                // Regular width keeps the popover; only compact size classes adapt.
+                .presentationCompactAdaptation(.sheet)
+        }
     }
 }
 

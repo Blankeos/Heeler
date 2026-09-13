@@ -5,6 +5,12 @@ enum AgentComposerKeyboardPresentation: Equatable {
     case hidden
     case system
     case tools
+
+    /// The tools dock follows the Keys dock's responder policy; see
+    /// `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+    @MainActor static var toolsDockReleasesFocus: Bool {
+        TerminalKeyboardMode.controlsReleaseFirstResponder
+    }
 }
 
 struct AgentComposerKeyboardLayout: Equatable {
@@ -16,10 +22,14 @@ struct AgentComposerKeyboardLayout: Equatable {
     let contentInset: CGFloat
     let availableToolsHeight: CGFloat
 
+    /// `softwareKeyboardDismissed` releases the `.system` pin once the
+    /// software keyboard really left while focus stayed (a hardware keyboard
+    /// attached); see ``TerminalKeyboardInset/isSoftwareKeyboardDismissed``.
     init(
         currentHeight: CGFloat,
         lastPresentedHeight: CGFloat,
-        presentation: AgentComposerKeyboardPresentation
+        presentation: AgentComposerKeyboardPresentation,
+        softwareKeyboardDismissed: Bool = false
     ) {
         switch presentation {
         case .hidden:
@@ -27,7 +37,11 @@ struct AgentComposerKeyboardLayout: Equatable {
             contentInset = currentHeight
         case .system:
             availableToolsHeight = lastPresentedHeight
-            contentInset = max(currentHeight, lastPresentedHeight)
+            // The pin bridges transient dips (Tools→iOS pre-show, input-view
+            // swaps), never a confirmed dismissal.
+            contentInset =
+                softwareKeyboardDismissed
+                ? currentHeight : max(currentHeight, lastPresentedHeight)
         case .tools:
             // Only the unmeasured path may invent a height. A positive
             // measurement, including compact landscape footprints below
@@ -95,6 +109,8 @@ struct AgentComposerView: View {
     let keyboardHandoff: TerminalKeyboardHandoff
     let keyboardHeight: CGFloat
     let actions: AgentComposerActions
+    /// Anchors the Attach Links list to the link chip that opens it.
+    let attachLinksPopover: AttachLinksPopover
     /// The screen's one Skills store, shared with the tools keyboard and the
     /// explicit picker. Nil for kinds without a skills source catalog, which
     /// disables inline suggestions.
@@ -107,13 +123,21 @@ struct AgentComposerView: View {
     var isKeyboardHandoffCurrent: (UUID) -> Bool = { _ in false }
     var onFirstResponderRequest: (UUID, Bool) -> Void = { _, _ in }
     var onKeyboardHandoffSettled: (UUID) -> Void = { _ in }
+    /// Drop is Composer-only. Defaults to Composer so existing call sites stay
+    /// a drop target; Direct Input must pass `.direct` to keep this inert.
+    var inputMode: AgentInputMode = .composer
     @State private var isInputFocused = false
     /// An explicit dismissal hides suggestions for the current trigger token;
     /// removing the token arms them again.
     @State private var isSuggestionsDismissed = false
+    @State private var isDropTargeted = false
 
     private var isToolsKeyboardPresented: Bool {
         keyboardPresentation == .tools
+    }
+
+    private var toolsDockReleasesFocus: Bool {
+        AgentComposerKeyboardPresentation.toolsDockReleasesFocus
     }
 
     var body: some View {
@@ -140,9 +164,9 @@ struct AgentComposerView: View {
                         }
                         ZStack(alignment: .topLeading) {
                             AgentComposerTextEditor(
-                                text: Binding(
-                                    get: { store.draft },
-                                    set: { store.replaceDraft(with: $0) }),
+                                text: store.draft,
+                                selectedRange: store.draftSelection,
+                                onEdit: { store.applyEditorDraft($0, selection: $1) },
                                 isFocused: $isInputFocused,
                                 keyboardPresentation: keyboardPresentation,
                                 keyboardHandoffID: keyboardHandoffID,
@@ -229,10 +253,21 @@ struct AgentComposerView: View {
                                 .frame(minHeight: 44)
                                 .accessibilityLabel("Attach Links")
                                 .accessibilityValue(links.accessibilityValue)
+                                .modifier(attachLinksPopover)
                             }
 
                             Spacer(minLength: 0)
-                            AgentComposerSendButton(isEnabled: store.canSend) {
+                            if store.hasPendingDroppedImages {
+                                Text(store.sendAccessibilityHint)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .accessibilityHidden(true)
+                            }
+                            AgentComposerSendButton(
+                                isEnabled: store.canSend,
+                                accessibilityHint: store.sendAccessibilityHint
+                            ) {
                                 Task { await deliverDraft { await store.send() } }
                             }
                         }
@@ -256,13 +291,27 @@ struct AgentComposerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(.secondary.opacity(0.16), lineWidth: 1)
+                        .fill(Color.accentColor.opacity(dropHighlight.fillOpacity))
                 }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(composerCardStroke, lineWidth: dropHighlight.strokeWidth)
+                }
+                .composerDropDestination(
+                    isEnabled: ComposerDropPolicy.acceptsDrops(in: inputMode),
+                    isTargeted: $isDropTargeted,
+                    accept: { store.acceptDrop($0) }
+                )
                 .padding(.horizontal, 12)
             }
             .padding(.vertical, 8)
 
         }
+        .modifier(ConsoleComposerCommandRegistration(
+            agentID: switcher.selectedID,
+            isFocused: isInputFocused,
+            hasDraft: { store.canSend },
+            send: { await deliverDraft { await store.send() } }))
         .onAppear {
             guard let selectedID = switcher.selectedID,
                   keyboardHandoff.consume(selectedID)
@@ -272,10 +321,12 @@ struct AgentComposerView: View {
         }
         .onChange(of: isInputFocused) { _, isFocused in
             if isFocused {
-                if keyboardPresentation != .tools {
+                // A tap into the text while the iPad tools dock is up asks
+                // for the system keyboard; on iPhone the dock keeps the caret.
+                if keyboardPresentation != .tools || toolsDockReleasesFocus {
                     setKeyboardPresentation(.system)
                 }
-            } else {
+            } else if !(toolsDockReleasesFocus && keyboardPresentation == .tools) {
                 setKeyboardPresentation(.hidden)
             }
         }
@@ -330,7 +381,7 @@ struct AgentComposerView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             setKeyboardPresentation(expectsSystemKeyboard ? .system : .tools)
-            isInputFocused = true
+            isInputFocused = expectsSystemKeyboard || !toolsDockReleasesFocus
         }
     }
 
@@ -351,7 +402,7 @@ struct AgentComposerView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             setKeyboardPresentation(.tools)
-            isInputFocused = true
+            isInputFocused = !toolsDockReleasesFocus
         }
     }
 
@@ -381,6 +432,16 @@ struct AgentComposerView: View {
 
     private var secondaryActionTint: Color {
         Color(uiColor: .label).opacity(0.72)
+    }
+
+    private var dropHighlight: ComposerDropHighlight {
+        ComposerDropHighlight(isTargeted: isDropTargeted)
+    }
+
+    private var composerCardStroke: Color {
+        dropHighlight.usesAccentStroke
+            ? Color.accentColor.opacity(0.72)
+            : Color.secondary.opacity(0.16)
     }
 
 }
@@ -498,6 +559,7 @@ private struct AgentComposerSkillSuggestions: View {
 
 struct AgentComposerSendButton: View {
     let isEnabled: Bool
+    var accessibilityHint: String = "Delivers the complete draft to the Agent"
     let action: () -> Void
 
     var body: some View {
@@ -509,7 +571,7 @@ struct AgentComposerSendButton: View {
         .buttonStyle(AgentComposerSendButtonStyle())
         .disabled(!isEnabled)
         .accessibilityLabel("Send")
-        .accessibilityHint("Delivers the complete draft to the Agent")
+        .accessibilityHint(accessibilityHint)
     }
 }
 
@@ -533,7 +595,9 @@ private struct AgentComposerSendButtonStyle: ButtonStyle {
 }
 
 private struct AgentComposerTextEditor: UIViewRepresentable {
-    @Binding var text: String
+    let text: String
+    let selectedRange: NSRange
+    let onEdit: (String, NSRange) -> Void
     @Binding var isFocused: Bool
     let keyboardPresentation: AgentComposerKeyboardPresentation
     let keyboardHandoffID: UUID?
@@ -542,7 +606,7 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
     let onKeyboardHandoffSettled: (UUID) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, isFocused: $isFocused)
+        Coordinator(onEdit: onEdit, isFocused: $isFocused)
     }
 
     func makeUIView(context: Context) -> AgentComposerUITextView {
@@ -559,12 +623,18 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: AgentComposerUITextView, context: Context) {
+        context.coordinator.onEdit = onEdit
         if textView.text != text {
             textView.text = text
+        }
+        if textView.selectedRange != selectedRange {
+            textView.selectedRange = selectedRange
         }
         textView.updateKeyboard(presentation: keyboardPresentation)
         textView.onKeyboardHandoffSettled = onKeyboardHandoffSettled
         let shouldFocus = isFocused
+        let coordinator = context.coordinator
+        coordinator.wantsFocus = shouldFocus
         guard shouldFocus != textView.isFirstResponder else { return }
         DispatchQueue.main.async { [weak textView] in
             guard let textView else { return }
@@ -583,6 +653,11 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
                     textView.becomeFirstResponder()
                 }
             } else {
+                // UIKit can flush a pending update from inside
+                // `becomeFirstResponder`, after the view is first responder
+                // but before `textViewDidBeginEditing` records it. That
+                // update's stale `false` must not undo the focus it raced.
+                guard !coordinator.wantsFocus else { return }
                 _ = textView.resignFirstResponder()
             }
         }
@@ -607,24 +682,33 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, UITextViewDelegate {
-        private var text: Binding<String>
+        var onEdit: (String, NSRange) -> Void
+        /// The latest focus intent, from either SwiftUI or UIKit, so a
+        /// deferred focus change can recheck it before acting.
+        var wantsFocus = false
         private var isFocused: Binding<Bool>
 
-        init(text: Binding<String>, isFocused: Binding<Bool>) {
-            self.text = text
+        init(onEdit: @escaping (String, NSRange) -> Void, isFocused: Binding<Bool>) {
+            self.onEdit = onEdit
             self.isFocused = isFocused
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            text.wrappedValue = textView.text
+            onEdit(textView.text, textView.selectedRange)
             textView.invalidateIntrinsicContentSize()
         }
 
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            onEdit(textView.text, textView.selectedRange)
+        }
+
         func textViewDidBeginEditing(_: UITextView) {
+            wantsFocus = true
             isFocused.wrappedValue = true
         }
 
         func textViewDidEndEditing(_: UITextView) {
+            wantsFocus = false
             isFocused.wrappedValue = false
         }
     }
@@ -636,6 +720,10 @@ private struct AgentComposerTextEditor: UIViewRepresentable {
 /// measured keyboard footprint behind it, so removing the candidate row never
 /// exposes an intermediate gap.
 final class AgentComposerUITextView: UITextView {
+    static var toolsDockReleasesFocus: Bool {
+        AgentComposerKeyboardPresentation.toolsDockReleasesFocus
+    }
+
     private lazy var suppressedSoftKeyboard = TerminalSuppressedSoftKeyboardView()
     private var keyboardPresentation: AgentComposerKeyboardPresentation = .hidden
     var onKeyboardHandoffSettled: ((UUID) -> Void)?
@@ -667,12 +755,13 @@ final class AgentComposerUITextView: UITextView {
     @objc private func keyboardFrameDidSettle(_ notification: Notification) {
         guard isFirstResponder, let window, window.isKeyWindow,
               let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
-                as? CGRect
+                as? CGRect,
+              let guideFrame = TerminalKeyboardInset.keyboardLayoutGuideFrame(in: window)
         else { return }
         let frameInWindow = window.convert(endFrame, from: window.screen.coordinateSpace)
         guard TerminalKeyboardInset.keyboardFrame(
             frameInWindow,
-            matches: window.keyboardLayoutGuide.layoutFrame,
+            matches: guideFrame,
             in: window)
         else { return }
         guard let activeKeyboardHandoffID else { return }
@@ -702,6 +791,9 @@ final class AgentComposerUITextView: UITextView {
             inputView = nil
         }
         guard isFirstResponder, inputView !== previousInputView else { return }
+        // On iPad the tools dock resigns instead (see `toolsDockReleasesFocus`);
+        // reloading here would flash the suppressed keyboard's toolbar first.
+        if presentation == .tools, Self.toolsDockReleasesFocus { return }
         UIView.performWithoutAnimation {
             reloadInputViews()
         }

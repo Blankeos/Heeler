@@ -29,6 +29,15 @@ extension TerminalKeyModifiers {
 enum TerminalKeyboardMode: Int {
     case text
     case controls
+
+    /// iPad draws a floating input-assistant bar (predictions, IME
+    /// candidates, dictation) under any first responder whose software
+    /// keyboard is suppressed, so the Keys and tools docks there release
+    /// first responder instead of hiding the keyboard in place. iPhone shows
+    /// no such bar and keeps the in-place switch, which preserves the IME
+    /// session across the dock and back.
+    @MainActor static let controlsReleaseFirstResponder =
+        UIDevice.current.userInterfaceIdiom == .pad
 }
 
 /// Function keys exposed by the full keyboard.
@@ -172,6 +181,9 @@ extension HeelerTerminalView {
             setTerminalInputView(TerminalSuppressedSoftKeyboardView())
         }
         guard isFirstResponder else { return }
+        // Where Keys releases first responder the owner resigns next; reloading
+        // here would present the suppressed keyboard's assistant bar first.
+        if mode == .controls, TerminalKeyboardMode.controlsReleaseFirstResponder { return }
         UIView.performWithoutAnimation {
             reloadInputViews()
         }
@@ -272,7 +284,7 @@ extension HeelerTerminalView {
         return TerminalKeyboardInset.keyboardFrame(
             frameInWindow,
             matches: keyboardLayoutFrameProvider?(window)
-                ?? window.keyboardLayoutGuide.layoutFrame,
+                ?? TerminalKeyboardInset.keyboardLayoutGuideFrame(in: window) ?? .zero,
             in: window)
     }
 }

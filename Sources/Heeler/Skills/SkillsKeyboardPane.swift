@@ -21,6 +21,7 @@ struct SkillsKeyboardPane: View {
             Divider()
             refreshRow
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -184,7 +185,7 @@ struct SkillDetailPreview: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(width: 370, alignment: .topLeading)
+        .frame(maxWidth: InputChromeLayout.skillPreviewMaxWidth, alignment: .topLeading)
         .frame(minHeight: 160, alignment: .topLeading)
     }
 }

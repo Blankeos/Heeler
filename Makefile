@@ -1,5 +1,6 @@
 # Task runner for Heeler. Typical flows:
 #   make install                 # build Debug and run it on the connected iPhone
+#   make install-ipad            # same, on the connected iPad
 #   make bump && make testflight # interim TestFlight build, no version cut
 #   make publish                 # cut a release: see docs/guides/releasing.md
 
@@ -9,16 +10,19 @@ ARCHIVE := build/Heeler.xcarchive
 DERIVED := build/DerivedData
 APP_ID  := dev.bybee.heeler
 SIM     ?= iPhone 17
+SIM_IPAD ?= iPad Pro 13-inch (M5)
 SIM_DESTINATION ?= platform=iOS Simulator,name=$(SIM)
 SIMULATOR_UDID ?=
 TEST_FLAGS ?=
 BUILD_FLAGS ?=
 IOS_WATCH_DEBOUNCE ?= 1s
 
-# First physical device paired with devicectl; override with `make install DEVICE=<uuid>`.
-DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | awk '/physical[a-z]* *$$/ { for (i = 1; i <= NF; i++) if ($$i ~ /^[0-9A-Fa-f-]{36}$$/) { print $$i; exit } }')
+# First physical iPhone / iPad paired with devicectl; override with
+# `make install DEVICE=<uuid>` or `make install-ipad DEVICE_IPAD=<uuid>`.
+DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | awk '/iPhone.*physical[a-z]* *$$/ { for (i = 1; i <= NF; i++) if ($$i ~ /^[0-9A-Fa-f-]{36}$$/) { print $$i; exit } }')
+DEVICE_IPAD ?= $(shell xcrun devicectl list devices 2>/dev/null | awk '/iPad.*physical[a-z]* *$$/ { for (i = 1; i <= NF; i++) if ($$i ~ /^[0-9A-Fa-f-]{36}$$/) { print $$i; exit } }')
 
-.PHONY: help generate resolve build test test-app test-ci-app install watch-ios-device sim build-sim sim-id archive upload testflight bump publish clean check-device ssh-artifacts verify-ssh-artifacts
+.PHONY: help generate resolve build test test-app test-ipad test-ci-app build-device install install-ipad watch-ios-device sim sim-ipad build-sim sim-id archive upload testflight bump publish clean check-device check-device-ipad ssh-artifacts verify-ssh-artifacts
 
 help: ## Show available targets
 	@awk -F':.*## ' '/^[a-z-]+:.*## / { printf "  make %-20s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -49,6 +53,9 @@ test-app: generate ## Run the app test suite (SIM_DESTINATION, TEST_FLAGS)
 test: test-app ## Run the app and HeelerSSH unit test suites on a simulator
 	scripts/run-heelerssh-package-tests.sh '$(SIM_DESTINATION)'
 
+test-ipad: ## Run the app and HeelerSSH unit test suites on the iPad simulator
+	$(MAKE) test SIM='$(SIM_IPAD)'
+
 test-ci-app: ## Run the committed-project CI app lane (no generate)
 	HEELER_CI_LANE=app HEELER_CI_SIMULATOR_UDID='$(or $(SIMULATOR_UDID),$(HEELER_CI_SIMULATOR_UDID))' \
 		scripts/run-ci-ios-tests.sh
@@ -56,10 +63,24 @@ test-ci-app: ## Run the committed-project CI app lane (no generate)
 check-device:
 	@test -n "$(DEVICE)" || { echo "No physical device found; pass DEVICE=<devicectl uuid>"; exit 1; }
 
-install: check-device build ## Build Debug, install on the iPhone, and relaunch it
+# Builds against the concrete device so automatic signing can register it
+# in the development profile; the generic `build` target cannot.
+build-device: check-device generate
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration Debug \
+		-destination 'platform=iOS,id=$(DEVICE)' -derivedDataPath $(DERIVED) \
+		-allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+
+install: build-device ## Build Debug, install on the iPhone, and relaunch it
 	xcrun devicectl device install app --device $(DEVICE) \
 		$(DERIVED)/Build/Products/Debug-iphoneos/Heeler.app
-	xcrun devicectl device process launch --terminate-existing --device $(DEVICE) $(APP_ID)
+	xcrun devicectl device process launch --terminate-existing --device $(DEVICE) $(APP_ID) \
+		|| echo "Installed, but the launch was refused (device locked?). Unlock it and open Heeler."
+
+check-device-ipad:
+	@test -n "$(DEVICE_IPAD)" || { echo "No physical iPad found; pass DEVICE_IPAD=<devicectl uuid>"; exit 1; }
+
+install-ipad: check-device-ipad ## Build Debug, install on the iPad, and relaunch it
+	$(MAKE) install DEVICE="$(DEVICE_IPAD)"
 
 watch-ios-device: ## Watch iOS code and install to a connected iPhone/iPad
 	@command -v watchexec >/dev/null || { echo "watchexec not found. Install with: brew install watchexec"; exit 1; }
@@ -81,6 +102,9 @@ sim: generate ## Build Debug and run it on the simulator (override with SIM=<nam
 	open -a Simulator
 	xcrun simctl install booted $(DERIVED)/Build/Products/Debug-iphonesimulator/Heeler.app
 	xcrun simctl launch --terminate-running-process booted $(APP_ID)
+
+sim-ipad: ## Build Debug and run it on the iPad simulator (override with SIM_IPAD=<name>)
+	$(MAKE) sim SIM='$(SIM_IPAD)'
 
 build-sim: generate ## Build Debug for SIM_DESTINATION using .ci/source-packages
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration Debug \

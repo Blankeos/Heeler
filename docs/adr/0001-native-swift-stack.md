@@ -19,3 +19,9 @@ We build natively in Swift for iOS 18+ (iPhone + iPad) with Citadel for SSH and 
 
 - Citadel 0.12.1 pulls swift-nio-ssh from a third-party fork (`Wellz26/swift-nio-ssh`), not Apple's repo. Pin versions and review dependency updates.
 - Core Citadel APIs were compile-verified (Swift 6.3.3): interactive bidirectional `withExec`, `withPTY` + `changeSize`, CryptoKit Ed25519 auth, custom host-key validator, reconnect modes. Known gaps, all minor: OpenSSH private-key import parser is internal (extract raw bytes manually), no keyboard-interactive (custom delegate), no built-in keepalive ping (send SSH ignore periodically).
+
+## Update 2026-09-13
+
+iPad support is restored. The 2026-08-13 iPhone-only target existed so App
+Store Connect would not require iPad screenshots. iPad is a first-class
+target from now on.

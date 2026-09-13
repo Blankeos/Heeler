@@ -39,9 +39,13 @@ final class TerminalKeyboardControl {
     weak var terminal: HeelerTerminalView? {
         didSet {
             oldValue?.onFirstResponderChange = nil
+            if oldValue?.keyboardControl === self {
+                oldValue?.keyboardControl = nil
+            }
             terminal?.onFirstResponderChange = { [weak self] in
                 self?.syncFirstResponder()
             }
+            terminal?.keyboardControl = self
             syncFirstResponder()
         }
     }
@@ -70,10 +74,10 @@ final class TerminalKeyboardControl {
     }
 
     /// One-shot sticky modifiers for the ⌃/⌥ caps on the terminal key
-    /// surfaces (#270). Tapping a modifier arms it for the next key only;
-    /// firing any key consumes and clears it, and tapping the armed
-    /// modifier again disarms it. No lock mode. Shared here so the Shell
-    /// Controls pad and the Agent quick-key rows behave identically.
+    /// surfaces (#270). Tapping a modifier arms it for the next key only —
+    /// on-screen `sendQuickKey` or the next physical press / `insertText`.
+    /// Firing any mapped key consumes and clears it; tapping the armed
+    /// modifier again disarms it. No lock mode.
     private(set) var pendingModifiers = TerminalKeyModifiers()
 
     func isModifierArmed(_ modifier: TerminalKeyModifiers) -> Bool {
@@ -92,9 +96,26 @@ final class TerminalKeyboardControl {
         setModifierArmed(modifier, armed: !isModifierArmed(modifier))
     }
 
-    func sendQuickKey(_ key: AgentQuickKey) {
-        guard let terminal, terminal.sendQuickKey(key, modifiers: pendingModifiers) else { return }
+    @discardableResult
+    func sendQuickKey(
+        _ key: AgentQuickKey,
+        combining physicalModifiers: TerminalKeyModifiers = []
+    ) -> Bool {
+        let modifiers = pendingModifiers.union(physicalModifiers)
+        guard let terminal, terminal.sendQuickKey(key, modifiers: modifiers) else {
+            return false
+        }
         pendingModifiers = []
+        return true
+    }
+
+    /// Control-only interrupt (Ctrl-C). Pre-armed Alt/Shift are discarded so
+    /// the advertised chord cannot become Ctrl+Alt+C.
+    func sendInterrupt() {
+        pendingModifiers = []
+        guard let terminal, terminal.sendQuickKey(.character("c"), modifiers: .control) else {
+            return
+        }
     }
 
     /// Open Terminal uses the same key encoding while retaining the Shell's
@@ -298,6 +319,34 @@ struct TerminalScreenView: UIViewRepresentable {
     }
 }
 
+/// When a terminal re-asserts its Ghostty layer scale after a size change.
+///
+/// libghostty rebuilds the surface's IOSurface asynchronously. Until its
+/// renderer has, the layer's `contentsScale` is derived from the old surface's
+/// pixel height over the new point height, and libghostty corrects that drift
+/// only after a render it drives itself (`TerminalSurfaceCoordinator`'s
+/// `onPostRender`). A terminal with nothing to draw, such as an idle Agent
+/// behind a focused Composer with no cursor blink, renders no such frame, so a
+/// keyboard raise can leave its content drawn at old-height / new-height of
+/// its size in the top-left corner (2/3 on a 13-inch iPad in portrait). A
+/// later layout pass sets the scale directly and requests that render.
+struct TerminalSurfaceScaleSettle: Equatable, Sendable {
+    /// When the follow-up passes run after a size change, in seconds from
+    /// that change: once the renderer has had a few frames, and again for a
+    /// large surface that takes longer to rebuild.
+    static let followUpDelays: [TimeInterval] = [0.1, 0.5]
+    private var lastBoundsSize: CGSize?
+
+    /// Records one layout pass at `size`. True when the size changed since
+    /// the previous pass, including the first one with a real size. The
+    /// follow-up passes themselves keep the size, so they never reschedule.
+    mutating func boundsDidLayout(size: CGSize) -> Bool {
+        defer { lastBoundsSize = size }
+        guard size.width > 0, size.height > 0 else { return false }
+        return lastBoundsSize != size
+    }
+}
+
 /// A grid as the Host is told about it: the columns and rows a resize report
 /// carries, with the pixel metrics Ghostty measures them from left behind.
 struct TerminalGridSize: Equatable, Sendable, CustomStringConvertible {
@@ -443,6 +492,19 @@ final class TerminalSessionCallbackBridge {
         deferredSize = (columns, rows)
     }
 
+    /// Tells the Host a grid it may have missed: a cancelled freeze discards
+    /// the grid it held, and Ghostty reports again only when the grid
+    /// changes. Held like any other report while a freeze is in force; the
+    /// engine's matching callback, if still in flight, is consumed once.
+    func reportSettledSize(columns: Int, rows: Int) {
+        guard !defersSizeReports else {
+            deferredSize = (columns, rows)
+            return
+        }
+        onSizeChanged?(columns, rows)
+        suppressesDuplicateSize = (columns, rows)
+    }
+
     func cancelSizeReportDeferral() {
         discardsResizeReportsThrough = max(
             discardsResizeReportsThrough, resizeSequence.current())
@@ -562,6 +624,32 @@ private final class TerminalInputTextRange: UITextRange {
     }
 }
 
+/// Where ``HeelerTerminalView`` sends one hardware key press.
+enum HardwarePressRoute: Equatable {
+    /// ⌘+ / ⌘−: the view steps the terminal zoom and swallows the press.
+    case zoom(Float)
+    /// Any other ⌘ chord: past Ghostty, up the responder chain to the scene's
+    /// key commands.
+    case sceneCommand
+    /// Everything else: Ghostty, as before.
+    case terminal
+}
+
+/// Identity of a physical key plus the modifiers that were actually held.
+/// `pressesBegan` maps `UIPress` to this and calls
+/// ``HeelerTerminalView/beginPhysicalKeyForArmedModifiers(_:token:)`` — the
+/// only consume path for hardware presses.
+struct ArmedModifierPhysicalKey: Equatable {
+    var key: AgentQuickKey
+    var physicalModifiers: TerminalKeyModifiers
+}
+
+private struct ArmedModifierEchoSuppression {
+    let pressToken: ObjectIdentifier
+    let expectedInsert: Character?
+    let expectBackspace: Bool
+}
+
 /// The app-owned seam around libghostty-spm. It keeps keyboard policy and the
 /// host-managed session lifecycle out of the SwiftUI screen.
 final class HeelerTerminalView: UITerminalView, TerminalByteSink {
@@ -581,6 +669,10 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     var raisesKeyboardWhenReady = false
     /// Notifies ``TerminalKeyboardControl`` when first-responder intent changes.
     var onFirstResponderChange: (() -> Void)?
+    /// One-shot ⌃/⌥/⇧ from the app-owned key surfaces. Physical presses and
+    /// `insertText` consult this so an armed modifier applies to the next
+    /// hardware key; empty means Ghostty owns the event unchanged.
+    weak var keyboardControl: TerminalKeyboardControl?
     /// Notifies ``TerminalScrollControl`` when DECSET alternate-screen state
     /// flips. `refs #268`.
     var onAlternateScreenChange: (() -> Void)?
@@ -631,6 +723,17 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// forwarded to the Host — long enough to coalesce one layout pass's
     /// several viewport reports into the final one.
     private static let gridSettleDelay: TimeInterval = 0.05
+    /// How long the window must keep one size before its grid is forwarded.
+    /// Longer than `gridSettleDelay`: a Stage Manager live resize pauses
+    /// between drag samples, and every intermediate grid the Host hears is a
+    /// full TUI redraw.
+    private static let windowResizeSettleDelay: TimeInterval = 0.15
+    private var windowResizeTracker = TerminalWindowResizeTracker()
+    private var surfaceScaleSettle = TerminalSurfaceScaleSettle()
+    private var surfaceScaleSettleTask: Task<Void, Never>?
+    /// A window resize froze grid reports and no thaw has forwarded its
+    /// settled grid yet. A cancelled freeze must then report it itself.
+    private var windowResizeGridIsPending = false
     private var responderGate = TerminalKeyboardResponderGate()
     private var viewportSnapshotTask: Task<Void, Never>?
     private(set) var isLocalInputEnabled = true
@@ -649,6 +752,16 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     private var touchScrollMomentumDisplayLink: CADisplayLink?
     private var touchScrollMomentumVelocityY: CGFloat = 0
     private var touchScrollMomentumTimestamp: CFTimeInterval = 0
+    /// Presses whose began event was rewritten through armed modifiers, so
+    /// Ghostty must not also see their ended/cancelled counterparts.
+    private var pressesConsumedByArmedModifiers: Set<ObjectIdentifier> = []
+    /// ⌘ presses sent past Ghostty to the scene's key commands. Their
+    /// releases follow the same path, so Ghostty never sees a release for a
+    /// press it never received.
+    private var pressesRoutedToSceneCommands: Set<ObjectIdentifier> = []
+    /// Echo de-dup for the originating consumed press only. Cleared on that
+    /// press's ended/cancelled, or on any non-matching insert/delete.
+    private var echoSuppression: ArmedModifierEchoSuppression?
 
     private lazy var touchScrollGesture = UIPanGestureRecognizer(
         target: self,
@@ -1173,6 +1286,12 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// `AgentQuickKey.enter` — not LF.
     override func insertText(_ text: String) {
         guard isLocalInputEnabled else { return }
+        if consumeMatchingInsertEcho(text) {
+            return
+        }
+        if applyArmedModifiers(toInsertedText: text) {
+            return
+        }
         if text == "\n" {
             super.insertText("\r")
             return
@@ -1181,6 +1300,9 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     }
 
     override func deleteBackward() {
+        if consumeMatchingBackspaceEcho() {
+            return
+        }
         guard isLocalInputEnabled else { return }
 
         // Ghostty already synchronizes marked-text deletion with UIKit. Raw
@@ -1290,8 +1412,68 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
 
     override func layoutSubviews() {
         guard !defersLayoutForKeyboardTransition else { return }
+        // Before Ghostty's layout, so the freeze is in force by the time the
+        // pass reports its grid.
+        deferGridReportsForWindowResize()
         super.layoutSubviews()
         reloadInputViewsAfterWindowResize()
+        settleSurfaceScaleAfterResize()
+    }
+
+    /// Lays out again after a size change so Ghostty's layer scale is set once
+    /// its renderer has rebuilt the surface; see ``TerminalSurfaceScaleSettle``.
+    /// The follow-up goes through `layoutSubviews`, so the keyboard and window
+    /// resize freezes still apply, and an unchanged grid reports nothing.
+    private func settleSurfaceScaleAfterResize() {
+        guard surfaceScaleSettle.boundsDidLayout(size: bounds.size) else { return }
+        surfaceScaleSettleTask?.cancel()
+        surfaceScaleSettleTask = Task { @MainActor [weak self] in
+            var elapsed: TimeInterval = 0
+            for delay in TerminalSurfaceScaleSettle.followUpDelays {
+                try? await Task.sleep(for: .seconds(delay - elapsed))
+                elapsed = delay
+                guard !Task.isCancelled, let self, self.window != nil else { return }
+                self.setNeedsLayout()
+                self.layoutIfNeeded()
+            }
+        }
+    }
+
+    /// Stage Manager live resize, like rotation, changes the window's size on
+    /// consecutive frames, and Ghostty reports a PTY resize for every grid
+    /// that passes by. Those reports go through the same freeze the keyboard
+    /// handoff uses: held while the window keeps changing, then forwarded
+    /// once, as the grid the window settled on. A keyboard or split-view
+    /// column change leaves the window's size alone and reports as before.
+    private func deferGridReportsForWindowResize() {
+        guard let windowSize = window?.bounds.size,
+              windowResizeTracker.windowDidLayout(size: windowSize)
+        else { return }
+        // A freeze already holding (a keyboard settle still waiting to
+        // report, or this burst's previous frame) keeps its deferred grid;
+        // re-arming it would throw that grid away.
+        if callbackBridge.gridReportPhase != .deferring {
+            callbackBridge.beginSizeReportDeferral()
+        }
+        windowResizeGridIsPending = true
+        keyboardGridReportTask?.cancel()
+        let settleDelay = Self.windowResizeSettleDelay
+        keyboardGridReportTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(settleDelay))
+            guard !Task.isCancelled, let self else { return }
+            keyboardGridReportTask = nil
+            windowResizeGridIsPending = false
+            if hasTerminalGridMetrics {
+                // Ghostty reports a grid only when it changes, so a burst
+                // that returns to a grid it already passed through produces
+                // no final callback. The surface's synchronous metrics are
+                // the grid the window settled on either way.
+                callbackBridge.provideAuthoritativeDeferredSize(
+                    columns: terminalGridSize.columns,
+                    rows: terminalGridSize.rows)
+            }
+            callbackBridge.finishSizeReportDeferral()
+        }
     }
 
     override func didMoveToWindow() {
@@ -1299,6 +1481,8 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         if window == nil {
             stopTouchScrollMomentum()
             responderGate.invalidateTouches()
+            surfaceScaleSettleTask?.cancel()
+            surfaceScaleSettleTask = nil
         } else {
             inheritKeyboard()
         }
@@ -1393,6 +1577,9 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             self?.keyboardGridReportTask = nil
+            // This thaw forwards the authoritative grid, covering any window
+            // resize the freeze had absorbed.
+            self?.windowResizeGridIsPending = false
             self?.callbackBridge.finishSizeReportDeferral()
         }
     }
@@ -1484,6 +1671,17 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
         keyboardGridReportTask?.cancel()
         keyboardGridReportTask = nil
         callbackBridge.cancelSizeReportDeferral()
+        if windowResizeGridIsPending {
+            windowResizeGridIsPending = false
+            if hasTerminalGridMetrics {
+                // The cancelled freeze held the grid a window resize settled
+                // on. Without this the Host keeps the pre-resize PTY size
+                // until the grid happens to change again.
+                callbackBridge.reportSettledSize(
+                    columns: terminalGridSize.columns,
+                    rows: terminalGridSize.rows)
+            }
+        }
         if let cancelledHandoffID {
             onKeyboardHandoffEnded?(cancelledHandoffID, .cancelled)
         }
@@ -1646,31 +1844,284 @@ final class HeelerTerminalView: UITerminalView, TerminalByteSink {
     /// ⌘+ / ⌘- would otherwise reach Ghostty's own font-size keybinds, which
     /// leaves the global setting stale. Handle them here and swallow both the
     /// press and its release so Ghostty never sees the shortcut.
+    ///
+    /// Every other ⌘ chord goes up the responder chain instead of to Ghostty,
+    /// whose `pressesBegan` never calls super: a text-input first responder
+    /// gets key presses before the scene's key commands, so a swallowed chord
+    /// would leave every app shortcut dead while the terminal is focused.
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let incoming = Set(presses.map(ObjectIdentifier.init))
+        if let token = echoSuppression?.pressToken, !incoming.contains(token) {
+            echoSuppression = nil
+        }
         var forwarded: Set<UIPress> = []
+        var sceneCommands: Set<UIPress> = []
         for press in presses {
+            if press.key.map({ Self.hardwarePressRoute(for: $0) }) == .sceneCommand {
+                pressesRoutedToSceneCommands.insert(ObjectIdentifier(press))
+                sceneCommands.insert(press)
+                continue
+            }
             guard let step = Self.zoomShortcutStep(for: press) else {
+                if let key = press.key,
+                    let physical = Self.physicalKey(
+                        keyCode: key.keyCode,
+                        characters: key.characters,
+                        charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+                        modifierFlags: key.modifierFlags),
+                    beginPhysicalKeyForArmedModifiers(
+                        physical, token: ObjectIdentifier(press))
+                {
+                    pressesConsumedByArmedModifiers.insert(ObjectIdentifier(press))
+                    continue
+                }
                 forwarded.insert(press)
                 continue
             }
             zoom(to: appliedFontSize + step)
+        }
+        if !sceneCommands.isEmpty {
+            next?.pressesBegan(sceneCommands, with: event)
         }
         guard !forwarded.isEmpty else { return }
         super.pressesBegan(forwarded, with: event)
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let forwarded = presses.filter { Self.zoomShortcutStep(for: $0) == nil }
+        let sceneCommands = presses.filter { forgetSceneCommandPress($0) }
+        if !sceneCommands.isEmpty {
+            next?.pressesEnded(sceneCommands, with: event)
+        }
+        let forwarded = presses.subtracting(sceneCommands).filter { press in
+            let consumed = forgetConsumedArmedModifierPress(press)
+            endPhysicalKeyForArmedModifiers(token: ObjectIdentifier(press))
+            return Self.zoomShortcutStep(for: press) == nil && !consumed
+        }
         guard !forwarded.isEmpty else { return }
         super.pressesEnded(Set(forwarded), with: event)
     }
 
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // Filter only presses this feature consumed. Zoom ⌘+/⌘− cancellations
+        // must reach the superclass exactly as they did before this override.
+        let sceneCommands = presses.filter { forgetSceneCommandPress($0) }
+        if !sceneCommands.isEmpty {
+            next?.pressesCancelled(sceneCommands, with: event)
+        }
+        var forwarded: Set<UIPress> = []
+        for press in presses.subtracting(sceneCommands) {
+            let consumed = forgetConsumedArmedModifierPress(press)
+            cancelPhysicalKeyForArmedModifiers(token: ObjectIdentifier(press))
+            if !consumed {
+                forwarded.insert(press)
+            }
+        }
+        guard !forwarded.isEmpty else { return }
+        super.pressesCancelled(Set(forwarded), with: event)
+    }
+
+    /// Applies a one-shot ⌃/⌥/⇧, unioned with modifiers the physical key
+    /// already held. Returns false when nothing is armed, or when encoding
+    /// the key fails, so Ghostty still receives the original event. A failed
+    /// send leaves the armed set in place for a later key the encoder can
+    /// represent.
+    @discardableResult
+    func applyArmedModifiers(
+        to key: AgentQuickKey,
+        physicalModifiers: TerminalKeyModifiers = []
+    ) -> Bool {
+        guard let keyboardControl, !keyboardControl.pendingModifiers.isEmpty else {
+            return false
+        }
+        return keyboardControl.sendQuickKey(key, combining: physicalModifiers)
+    }
+
+    /// The only consume path `pressesBegan` uses. Tests drive the same seam
+    /// with `(key identity, physical modifier flags)` because `UIPress` cannot
+    /// be constructed in the suite.
+    @discardableResult
+    func beginPhysicalKeyForArmedModifiers(
+        _ key: ArmedModifierPhysicalKey,
+        token: ObjectIdentifier
+    ) -> Bool {
+        guard applyArmedModifiers(to: key.key, physicalModifiers: key.physicalModifiers) else {
+            return false
+        }
+        switch key.key {
+        case .character(let character):
+            echoSuppression = ArmedModifierEchoSuppression(
+                pressToken: token, expectedInsert: character, expectBackspace: false)
+        case .backspace:
+            echoSuppression = ArmedModifierEchoSuppression(
+                pressToken: token, expectedInsert: nil, expectBackspace: true)
+        default:
+            echoSuppression = ArmedModifierEchoSuppression(
+                pressToken: token, expectedInsert: nil, expectBackspace: false)
+        }
+        return true
+    }
+
+    func endPhysicalKeyForArmedModifiers(token: ObjectIdentifier) {
+        clearEchoSuppression(for: token)
+    }
+
+    func cancelPhysicalKeyForArmedModifiers(token: ObjectIdentifier) {
+        clearEchoSuppression(for: token)
+    }
+
+    /// Maps a hardware `UIKey` to the press seam. ⌘ chords return nil so they
+    /// are never intercepted. Printable identity prefers `characters` so
+    /// Shift+c stays `"C"`. Characters the Ghostty US-key encoder cannot
+    /// represent also return nil; `applyArmedModifiers` still refuses a
+    /// failed send so an unmapped or unencodable press is forwarded.
+    static func physicalKey(
+        keyCode: UIKeyboardHIDUsage,
+        characters: String,
+        charactersIgnoringModifiers: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> ArmedModifierPhysicalKey? {
+        guard !modifierFlags.contains(.command),
+            let identity = quickKey(
+                keyCode: keyCode,
+                characters: characters,
+                charactersIgnoringModifiers: charactersIgnoringModifiers)
+        else { return nil }
+        return ArmedModifierPhysicalKey(
+            key: identity,
+            physicalModifiers: physicalModifiers(from: modifierFlags))
+    }
+
+    private func applyArmedModifiers(toInsertedText text: String) -> Bool {
+        if text == "\n" || text == "\r" {
+            return applyArmedModifiers(to: .enter)
+        }
+        guard text.count == 1, let character = text.first else { return false }
+        return applyArmedModifiers(to: .character(character))
+    }
+
+    private func consumeMatchingInsertEcho(_ text: String) -> Bool {
+        guard let suppression = echoSuppression else { return false }
+        if text.count == 1, text.first == suppression.expectedInsert {
+            echoSuppression = nil
+            return true
+        }
+        echoSuppression = nil
+        return false
+    }
+
+    private func consumeMatchingBackspaceEcho() -> Bool {
+        guard let suppression = echoSuppression else { return false }
+        if suppression.expectBackspace {
+            echoSuppression = nil
+            return true
+        }
+        echoSuppression = nil
+        return false
+    }
+
+    private func clearEchoSuppression(for pressToken: ObjectIdentifier) {
+        if echoSuppression?.pressToken == pressToken {
+            echoSuppression = nil
+        }
+    }
+
+    private func forgetSceneCommandPress(_ press: UIPress) -> Bool {
+        pressesRoutedToSceneCommands.remove(ObjectIdentifier(press)) != nil
+    }
+
+    private func forgetConsumedArmedModifierPress(_ press: UIPress) -> Bool {
+        pressesConsumedByArmedModifiers.remove(ObjectIdentifier(press)) != nil
+    }
+
+    private static func physicalModifiers(
+        from flags: UIKeyModifierFlags
+    ) -> TerminalKeyModifiers {
+        var modifiers = TerminalKeyModifiers()
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.alternate) { modifiers.insert(.option) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        return modifiers
+    }
+
+    private static func printableCharacter(_ string: String) -> Character? {
+        guard string.count == 1, let character = string.first,
+            !character.unicodeScalars.contains(where: {
+                $0.properties.generalCategory == .control
+            })
+        else {
+            return nil
+        }
+        return character
+    }
+
+    private static func quickKey(
+        keyCode: UIKeyboardHIDUsage,
+        characters: String,
+        charactersIgnoringModifiers: String
+    ) -> AgentQuickKey? {
+        switch keyCode {
+        case .keyboardEscape: return .escape
+        case .keyboardTab: return .tab
+        case .keyboardReturnOrEnter: return .enter
+        case .keyboardDeleteOrBackspace: return .backspace
+        case .keyboardDeleteForward: return .forwardDelete
+        case .keyboardLeftArrow: return .left
+        case .keyboardRightArrow: return .right
+        case .keyboardUpArrow: return .up
+        case .keyboardDownArrow: return .down
+        case .keyboardHome: return .home
+        case .keyboardEnd: return .end
+        case .keyboardPageUp: return .pageUp
+        case .keyboardPageDown: return .pageDown
+        case .keyboardInsert: return .insert
+        case .keyboardF1: return .function(.f1)
+        case .keyboardF2: return .function(.f2)
+        case .keyboardF3: return .function(.f3)
+        case .keyboardF4: return .function(.f4)
+        case .keyboardF5: return .function(.f5)
+        case .keyboardF6: return .function(.f6)
+        case .keyboardF7: return .function(.f7)
+        case .keyboardF8: return .function(.f8)
+        case .keyboardF9: return .function(.f9)
+        case .keyboardF10: return .function(.f10)
+        case .keyboardF11: return .function(.f11)
+        case .keyboardF12: return .function(.f12)
+        default:
+            if let character = printableCharacter(characters)
+                ?? printableCharacter(charactersIgnoringModifiers),
+                TerminalKeyPress(typing: character) != nil
+            {
+                return .character(character)
+            }
+            return nil
+        }
+    }
+
     private static func zoomShortcutStep(for press: UIPress) -> Float? {
-        guard let key = press.key, key.modifierFlags.contains(.command) else { return nil }
-        switch key.charactersIgnoringModifiers {
-        case "+", "=": return 1
-        case "-", "_": return -1
-        default: return nil
+        guard let key = press.key,
+            case .zoom(let step) = hardwarePressRoute(for: key)
+        else { return nil }
+        return step
+    }
+
+    private static func hardwarePressRoute(for key: UIKey) -> HardwarePressRoute {
+        hardwarePressRoute(
+            charactersIgnoringModifiers: key.charactersIgnoringModifiers,
+            modifierFlags: key.modifierFlags)
+    }
+
+    /// Where a hardware press goes. ⌘+ / ⌘− step the zoom here, any other ⌘
+    /// chord belongs to the scene's key commands, and everything else,
+    /// including Ctrl, Esc, and arrows, reaches Ghostty unchanged.
+    static func hardwarePressRoute(
+        charactersIgnoringModifiers: String,
+        modifierFlags: UIKeyModifierFlags
+    ) -> HardwarePressRoute {
+        guard modifierFlags.contains(.command) else { return .terminal }
+        switch charactersIgnoringModifiers {
+        case "+", "=": return .zoom(1)
+        case "-", "_": return .zoom(-1)
+        default: return .sceneCommand
         }
     }
 

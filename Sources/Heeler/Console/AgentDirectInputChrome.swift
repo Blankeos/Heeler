@@ -41,15 +41,10 @@ struct AgentDirectInputChromeContext {
 /// tear it down or leave a hollow gap.
 struct AgentDirectInputChrome: View {
     let context: AgentDirectInputChromeContext
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
 
-    private static let shortcutKeys: [AgentQuickKey] = [
-        .escape, .tab, .shiftTab,
-        .up, .down, .left, .right,
-        .backspace, .shiftEnter,
-    ]
+    private let strip = InputShortcutStripPresentation()
 
     private var presentation: AgentDirectInputChromeContext.Presentation {
         context.presentation
@@ -84,14 +79,7 @@ struct AgentDirectInputChrome: View {
     }
 
     private var modeControl: TerminalAgentSwitcherModeControl {
-        if horizontalSizeClass == .regular {
-            return .segmented(
-                selection: .direct,
-                select: { mode in
-                    if mode == .composer { interactions.showComposer() }
-                })
-        }
-        return .button(
+        .button(
             systemImage: "square.and.pencil",
             accessibilityLabel: AgentDirectInputPresentation.showComposerAccessibilityLabel,
             accessibilityHint: AgentDirectInputPresentation.showComposerAccessibilityHint,
@@ -99,21 +87,8 @@ struct AgentDirectInputChrome: View {
     }
 
     private var shortcutRow: some View {
-        HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(Self.shortcutKeys, id: \.self) { key in
-                        shortcutKeyButton(key)
-                    }
-                    pasteKeyButton
-                }
-                .padding(.leading, 8)
-                .padding(.trailing, 6)
-            }
-
-            fixedShortcutButtons
-        }
-        .frame(height: 44)
+        scrollingShortcutRow
+        .frame(height: InputChromeLayout.shortcutRowHeight)
         .background(alignment: .top) {
             Rectangle()
                 .fill(Color(uiColor: .separator))
@@ -122,24 +97,55 @@ struct AgentDirectInputChrome: View {
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
-    private var fixedShortcutButtons: some View {
+    private var scrollingShortcutRow: some View {
         HStack(spacing: 0) {
-            shortcutKeyButton(.enter)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(strip.leadingItems, id: \.self) { item in
+                        sizedStripItem(item)
+                    }
+                }
+                .padding(.leading, 8)
+                .padding(.trailing, 6)
+            }
 
-            moreMenu
-                .frame(width: 44, height: 44)
+            HStack(spacing: 4) {
+                ForEach(strip.trailingItems, id: \.self) { item in
+                    sizedStripItem(item)
+                }
+            }
+            .padding(.leading, 4)
+            .padding(.trailing, 8)
+            .background(Color(uiColor: .secondarySystemBackground))
+            .overlay(alignment: .leading) {
+                LinearGradient(
+                    colors: [.clear, Color(uiColor: .separator).opacity(0.7)],
+                    startPoint: .leading,
+                    endPoint: .trailing)
+                    .frame(width: InputChromeLayout.pinnedFadeWidth)
+                    .offset(x: -InputChromeLayout.pinnedFadeWidth)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
-        .padding(.leading, 4)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .overlay(alignment: .leading) {
-            LinearGradient(
-                colors: [.clear, Color(uiColor: .separator).opacity(0.7)],
-                startPoint: .leading,
-                endPoint: .trailing)
-                .frame(width: 8)
-                .offset(x: -8)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+    }
+
+    private func sizedStripItem(_ item: InputShortcutStripItem) -> some View {
+        stripItem(item)
+            .frame(
+                width: InputChromeLayout.compactWidth(for: item),
+                height: InputChromeLayout.shortcutRowHeight)
+    }
+
+    @ViewBuilder
+    private func stripItem(_ item: InputShortcutStripItem) -> some View {
+        switch item {
+        case .key(let key):
+            shortcutKeyButton(key)
+        case .paste:
+            pasteKeyButton
+        case .more:
+            moreMenu
         }
     }
 
@@ -147,16 +153,16 @@ struct AgentDirectInputChrome: View {
     private func shortcutKeyButton(_ key: AgentQuickKey) -> some View {
         if key == .backspace {
             TerminalBackspaceButton(isToolbar: true) { sendShortcutKey(key) }
-                .frame(width: keyCapWidth(for: key), height: 44)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Button {
                 sendShortcutKey(key)
             } label: {
-                shortcutKeyCap(minWidth: keyCapWidth(for: key)) {
+                shortcutKeyCap {
                     shortcutKeyLabel(key)
                 }
             }
-            .frame(height: 44)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(.rect)
             .buttonStyle(TerminalKeyboardButtonStyle())
             .accessibilityLabel(key.accessibilityLabel)
@@ -181,30 +187,13 @@ struct AgentDirectInputChrome: View {
         }
         // The control resolves its colors once, when it is created.
         .id(colorScheme)
-        .frame(width: 34, height: 34)
-        .scaleEffect(30.0 / 34.0)
-        .frame(width: 30, height: 44)
+        .frame(
+            width: InputChromeLayout.pasteControlSide,
+            height: InputChromeLayout.pasteControlSide)
+        .scaleEffect(
+            InputChromeLayout.pasteVisualWidth / InputChromeLayout.pasteControlSide)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityHint("Pastes the clipboard into the Agent")
-    }
-
-    private func keyCapWidth(for key: AgentQuickKey) -> CGFloat {
-        switch key {
-        case .escape, .tab:
-            38
-        case .shiftTab:
-            46
-        case .shiftEnter:
-            54
-        case .enter:
-            42
-        case .left, .up, .down, .right:
-            30
-        case .backspace:
-            72
-        case .home, .end, .pageUp, .pageDown,
-            .insert, .forwardDelete, .function, .character:
-            72
-        }
     }
 
     @ViewBuilder
@@ -219,11 +208,10 @@ struct AgentDirectInputChrome: View {
     }
 
     private func shortcutKeyCap<Content: View>(
-        minWidth: CGFloat,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .frame(minWidth: minWidth, minHeight: 30)
+            .frame(maxWidth: .infinity, minHeight: 30)
     }
 
     private var moreMenu: some View {
@@ -233,7 +221,7 @@ struct AgentDirectInputChrome: View {
                 sections: AgentActionMenuPolicy.directInputMoreSections,
                 restoreComposerThen: interactions.restoreComposerThen)
         } label: {
-            shortcutKeyCap(minWidth: 30) {
+            shortcutKeyCap {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .semibold))
             }

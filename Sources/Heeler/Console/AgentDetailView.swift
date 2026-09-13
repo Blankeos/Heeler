@@ -13,11 +13,15 @@ struct AgentDetailView: View {
     private let keyboardHandoff: TerminalKeyboardHandoff
     private let keyboardInset: TerminalKeyboardInset
     private let isOnStage: () -> Bool
+    private let isVisible: () -> Bool
     private let onSwitch: (ConsoleAgent.ID) -> Void
     private let onClosed: () -> Void
     @State private var composer: AgentComposerStore
     @State private var attach: AgentAttachStore
     @State private var openTerminal: AgentOpenTerminalStore
+    /// Which window holds this Host's terminal channel; nil outside a scene
+    /// root, where this detail always holds it.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     init(
         agent: ConsoleAgent,
@@ -28,7 +32,7 @@ struct AgentDetailView: View {
         activity: AppActivityCoordinator,
         keyboardHandoff: TerminalKeyboardHandoff,
         keyboardInset: TerminalKeyboardInset,
-        isOnStage: @escaping () -> Bool,
+        stage: AgentDetailStage,
         onSwitch: @escaping (ConsoleAgent.ID) -> Void,
         onClosed: @escaping () -> Void,
         composerStore: AgentComposerStore? = nil,
@@ -43,7 +47,9 @@ struct AgentDetailView: View {
         self.activity = activity
         self.keyboardHandoff = keyboardHandoff
         self.keyboardInset = keyboardInset
+        let isOnStage = stage.isOnStage
         self.isOnStage = isOnStage
+        self.isVisible = stage.isVisible
         self.onSwitch = onSwitch
         self.onClosed = onClosed
         let composer = composerStore ?? console.composerStore(for: agent)
@@ -96,11 +102,26 @@ struct AgentDetailView: View {
                     }))
     }
 
+    private var terminalAccess: HostTerminalAccess {
+        sceneRouting?.terminalAccess(for: agent.hostID) ?? .holds
+    }
+
+    private func applyTerminalAccess() {
+        guard openTerminal.shell == nil, !openTerminal.isOpening else { return }
+        switch terminalAccess {
+        case .holds:
+            attach.rejoin()
+        case .liveInAnotherWindow:
+            attach.leaveForTerminalHandoff()
+        }
+    }
+
     var body: some View {
         Group {
             if let shell = openTerminal.shell {
                 ShellTerminalView(
                     store: shell,
+                    agentID: agent.id,
                     terminal: terminal,
                     activity: activity,
                     isReturning: openTerminal.isReturning,
@@ -123,9 +144,14 @@ struct AgentDetailView: View {
                     isOnStage: {
                         isOnStage() && openTerminal.shell == nil
                     },
+                    // A detail that lost its Host channel to another window
+                    // is still on screen, and its sheets still cover commands.
+                    isCommandOnStage: {
+                        isVisible() && openTerminal.shell == nil
+                    },
                     onSwitch: onSwitch,
                     onClosed: onClosed,
-                    canOpenTerminal: openTerminal.canOpen,
+                    canOpenTerminal: openTerminal.canOpen && terminalAccess == .holds,
                     isOpeningTerminal: openTerminal.isOpening,
                     openTerminal: { openTerminal.open() },
                     composer: composer,
@@ -135,6 +161,22 @@ struct AgentDetailView: View {
         }
         .onChange(of: console.hostConnectionGenerations[agent.hostID]) { _, generation in
             openTerminal.transportGenerationDidChange(generation)
+        }
+        // The same-Host handoff between windows rides the Attach store's own
+        // leave and rejoin, the path the Shell Terminal handoff already
+        // uses: the window that loses the channel releases its Attach, and
+        // the one that gains it rejoins behind that release through the
+        // Host's terminal serialization. A Shell Terminal in this window
+        // keeps the channel, so neither applies while one is open.
+        .onChange(of: terminalAccess, initial: true) {
+            applyTerminalAccess()
+        }
+        .onChange(of: openTerminal.shell != nil || openTerminal.isOpening, initial: true) {
+            _, showsShellTerminal in
+            sceneRouting?.shellTerminalDidChange(agent: showsShellTerminal ? agent.id : nil)
+            // Access that changed while a Shell Terminal was opening applies
+            // once the detail is back on the Agent.
+            applyTerminalAccess()
         }
         .alert(
             "Couldn't Open Terminal",
@@ -156,5 +198,8 @@ struct AgentDetailView: View {
         } message: {
             Text(openTerminal.closeFailureMessage ?? "")
         }
+        .modifier(ConsoleDetailPresentationRegistration(
+            agentID: agent.id,
+            isPresenting: openTerminal.failure != nil || openTerminal.closeFailureMessage != nil))
     }
 }

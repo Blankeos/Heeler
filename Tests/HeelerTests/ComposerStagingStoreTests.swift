@@ -35,6 +35,149 @@ struct ComposerStagingStoreTests {
                     commands: [.dismiss]))
     }
 
+    @Test func pickerBeginStillInsertsAndPublishesTheSameOperation() async throws {
+        let fixture = try await makeFixture(.image)
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let id = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("staging should complete") { fixture.store.state.isCompleted }
+
+        let path = remotePath(for: .image)
+        #expect(fixture.composer.draft == "\(path) ")
+        #expect(events == [.completed(id: id, path: path)])
+    }
+
+    @Test func beginCanOmitComposerInsertAndStillPublishCompletion() async throws {
+        let fixture = try await makeFixture(.image)
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let id = try #require(
+            fixture.store.begin(
+                .photo(DataImageSelection(data: Data([0x01]))),
+                insertPathIntoComposer: false))
+        try await waitUntil("staging should complete") { fixture.store.state.isCompleted }
+
+        let path = remotePath(for: .image)
+        #expect(fixture.composer.draft.isEmpty)
+        #expect(fixture.sideEffects.events == [.copied(path)])
+        #expect(events == [.completed(id: id, path: path)])
+    }
+
+    @Test func cancelPublishesCancelledForTheBeginIdentifier() async throws {
+        let stageGate = ScriptedTransportCallGate()
+        let fixture = try await makeFixture(
+            .image,
+            gates: stageGates(stageGate, for: .image))
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let id = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("upload should reach the gate") {
+            await stageGate.entryCount == 1
+        }
+        fixture.store.perform(.cancel)
+        await stageGate.open()
+        try await waitUntil("cancellation should return to idle") {
+            fixture.store.state == .idle
+        }
+
+        #expect(events == [.cancelled(id: id)])
+        #expect(fixture.composer.draft.isEmpty)
+    }
+
+    @Test func retryPublishesCompletionWithTheSameOperationIdentifier() async throws {
+        let retriedPath = remotePath(for: .image, stem: "retried")
+        let fixture = try await makeFixture(
+            .image,
+            stagePlans: [
+                .failure(.transferFailed),
+                .success(retriedPath),
+            ])
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let id = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("staging should fail") { fixture.store.state.isFailed }
+        #expect(events == [.failed(id: id, retryable: true)])
+
+        fixture.store.perform(.retry)
+        try await waitUntil("retry should complete") { fixture.store.state.isCompleted }
+
+        #expect(
+            events == [
+                .failed(id: id, retryable: true),
+                .completed(id: id, path: retriedPath),
+            ])
+    }
+
+    @Test func dismissAfterFailurePublishesDismissed() async throws {
+        let fixture = try await makeFixture(
+            .image,
+            stagePlans: [.failure(.sftpUnavailable)])
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let id = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("staging should fail") { fixture.store.state.isFailed }
+        fixture.store.perform(.dismiss)
+
+        #expect(fixture.store.state == .idle)
+        #expect(
+            events == [
+                .failed(id: id, retryable: false),
+                .dismissed(id: id),
+            ])
+    }
+
+    @Test func beginReplacesAFailedOperationAndPublishesDismissed() async throws {
+        let retriedPath = remotePath(for: .image, stem: "picker")
+        let fixture = try await makeFixture(
+            .image,
+            stagePlans: [
+                .failure(.transferFailed),
+                .success(retriedPath),
+            ])
+        defer { fixture.cleanup() }
+        var events: [ComposerStagingStore.OperationEvent] = []
+        fixture.store.onOperationEvent = { events.append($0) }
+
+        let failedID = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x01])))))
+        try await waitUntil("staging should fail") { fixture.store.state.isFailed }
+        #expect(events == [.failed(id: failedID, retryable: true)])
+
+        let nextID = try #require(
+            fixture.store.begin(.photo(DataImageSelection(data: Data([0x02])))))
+        #expect(nextID != failedID)
+        #expect(
+            events == [
+                .failed(id: failedID, retryable: true),
+                .dismissed(id: failedID),
+            ])
+
+        try await waitUntil("the replacement should complete") {
+            fixture.store.state.isCompleted
+        }
+        #expect(fixture.composer.draft == "\(retriedPath) ")
+        #expect(
+            events == [
+                .failed(id: failedID, retryable: true),
+                .dismissed(id: failedID),
+                .completed(id: nextID, path: retriedPath),
+            ])
+    }
+
     @Test(arguments: StagingTestMedium.allCases)
     func transientFailureRetainsPreparationAndRetryCompletes(
         _ medium: StagingTestMedium

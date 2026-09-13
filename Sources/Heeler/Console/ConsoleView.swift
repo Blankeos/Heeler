@@ -35,6 +35,9 @@ struct ConsoleView: View {
     /// Client-side Agents search text (#292). Applied after `hostFilter` in
     /// both presentations; the Host filter is untouched.
     @State private var searchText = ""
+    @State private var isSearchPresented = false
+    @FocusState private var isSearchFocused: Bool
+    @State private var commandRegistry = ConsoleCommandRegistry()
     /// Owns flat/grouped mode and per-Host collapsed state (#245).
     @State private var listPresentation = ConsoleListPresentationStore()
     /// Outlives the detail column's rebuilds, which is the whole point: it
@@ -47,8 +50,14 @@ struct ConsoleView: View {
     /// later — an extra reflow, and a Connecting dialog that visibly jumps
     /// from the middle of the screen to the middle of the terminal.
     @State private var keyboardInset = TerminalKeyboardInset()
+    @State private var splitVisibility = ConsoleSplitVisibilityState()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+    /// The window-aware entry into navigation; nil outside a scene root.
+    @Environment(\.agentSceneRouting) private var sceneRouting
 
     var body: some View {
         // A split view instead of a plain stack for the iPad's sake: regular
@@ -56,99 +65,133 @@ struct ConsoleView: View {
         // width collapses into the familiar push navigation. The router's
         // path stays the single source of truth — the sidebar selection is a
         // projection of it, so notification deep links keep working.
-        NavigationSplitView {
-            content
-                .navigationTitle("Agents")
-                .searchable(text: $searchText, prompt: "Search Agents")
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                .toolbar {
-                    // A filter is meaningless with a single Host.
-                    if hosts.hosts.count > 1 {
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu(
-                                "Filter by Host",
-                                systemImage: hostFilter == nil
-                                    ? "line.3.horizontal.decrease.circle"
-                                    : "line.3.horizontal.decrease.circle.fill"
-                            ) {
-                                Picker("Host", selection: $hostFilter) {
-                                    Text("All Hosts").tag(Host.ID?.none)
-                                    ForEach(hosts.hosts) { host in
-                                        Text(host.displayName).tag(Host.ID?.some(host.id))
+        GeometryReader { geometry in
+            let presentation = ConsoleSplitPresentation(
+                horizontalSizeClass: horizontalSizeClass,
+                size: geometry.size,
+                safeAreaInsets: geometry.safeAreaInsets)
+            NavigationSplitView(columnVisibility: Binding(
+                get: { splitVisibility.visibility },
+                set: { splitVisibility.systemDidChangeVisibility($0, presentation: presentation) })
+            ) {
+                content
+                    .navigationTitle("Agents")
+                    .searchable(
+                        text: $searchText, isPresented: $isSearchPresented, prompt: "Search Agents")
+                    .searchFocused($isSearchFocused)
+                    .navigationSplitViewColumnWidth(
+                        min: presentation.sidebarWidth.minimum,
+                        ideal: presentation.sidebarWidth.ideal,
+                        max: presentation.sidebarWidth.maximum)
+                    .toolbar {
+                        // A filter is meaningless with a single Host.
+                        if hosts.hosts.count > 1 {
+                            ToolbarItem(placement: .primaryAction) {
+                                Menu(
+                                    "Filter by Host",
+                                    systemImage: hostFilter == nil
+                                        ? "line.3.horizontal.decrease.circle"
+                                        : "line.3.horizontal.decrease.circle.fill"
+                                ) {
+                                    Picker("Host", selection: $hostFilter) {
+                                        Text("All Hosts").tag(Host.ID?.none)
+                                        ForEach(hosts.hosts) { host in
+                                            Text(host.displayName).tag(Host.ID?.some(host.id))
+                                        }
                                     }
                                 }
+                                .hoverEffect(.highlight)
                             }
                         }
-                    }
-                    if !hosts.hosts.isEmpty {
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu {
-                                Picker("Presentation", selection: presentationModeBinding) {
-                                    ForEach(ConsoleListPresentationMode.allCases) { mode in
-                                        Text(mode.title).tag(mode)
+                        if !hosts.hosts.isEmpty {
+                            ToolbarItem(placement: .primaryAction) {
+                                Menu {
+                                    Picker("Presentation", selection: presentationModeBinding) {
+                                        ForEach(ConsoleListPresentationMode.allCases) { mode in
+                                            Text(mode.title).tag(mode)
+                                        }
                                     }
+                                } label: {
+                                    Label(
+                                        "Presentation",
+                                        systemImage: listPresentation.mode == .grouped
+                                            ? "list.bullet.rectangle"
+                                            : "list.bullet")
                                 }
-                            } label: {
-                                Label(
-                                    "Presentation",
-                                    systemImage: listPresentation.mode == .grouped
-                                        ? "list.bullet.rectangle"
-                                        : "list.bullet")
+                                .hoverEffect(.highlight)
+                                .accessibilityLabel("Agent list presentation")
+                                .accessibilityValue(listPresentation.mode.title)
                             }
-                            .accessibilityLabel("Agent list presentation")
-                            .accessibilityValue(listPresentation.mode.title)
                         }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Hosts", systemImage: "server.rack") {
-                            presentHosts()
-                        }
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Settings", systemImage: "gearshape") {
-                            isShowingSettings = true
-                        }
-                    }
-                    if !hosts.hosts.isEmpty {
                         ToolbarItem(placement: .primaryAction) {
-                            Button("New Agent", systemImage: "plus") {
-                                isStartingAgent = true
+                            Button("Hosts", systemImage: "server.rack") {
+                                presentHosts()
+                            }
+                            .hoverEffect(.highlight)
+                        }
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Settings", systemImage: "gearshape") {
+                                isShowingSettings = true
+                            }
+                            .hoverEffect(.highlight)
+                        }
+                        if !hosts.hosts.isEmpty {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button("New Agent", systemImage: "plus") {
+                                    isStartingAgent = true
+                                }
+                                .hoverEffect(.highlight)
                             }
                         }
                     }
-                }
-                .sheet(item: $hostSheet) { destination in
-                    // HostListView brings its own NavigationStack.
-                    HostListView(
-                        store: hosts,
-                        initialHostID: destination.hostID,
-                        connectionStatuses: console.hostStatuses,
-                        standingFailures: console.hostStandingFailures,
-                        latencies: console.hostLatencies,
-                        manualReconnectInFlightHostIDs: manualReconnectInFlightHostIDs,
-                        retryConnection: { await reconnectHost($0) })
-                }
-                .sheet(isPresented: $isStartingAgent) {
-                    // StartAgentView brings its own NavigationStack.
-                    StartAgentView(hosts: hosts.hosts, console: console) { id in
-                        // A fresh launch lands in its own terminal, exactly
-                        // as tapping the new row would.
-                        notificationRouter.path = [id]
-                    }
-                }
-                .sheet(isPresented: $isShowingSettings) {
-                    SettingsView(
-                        terminal: terminal,
-                        appearance: appearance,
-                        pushRegistration: pushRegistration,
-                        notificationPreferences: notificationPreferences,
-                        relaySettings: relaySettings,
-                        liveActivities: liveActivities,
-                        console: console,
-                        hosts: hosts.hosts)
-                }
-        } detail: {
-            detail
+            } detail: {
+                detail
+            }
+            // Keep structural identity stable across rotation and size-class changes.
+            .navigationSplitViewStyle(.automatic)
+            .onChange(of: presentation, initial: true) { _, presentation in
+                splitVisibility.update(from: presentation)
+            }
+        }
+        // The detail's actions can present these even while the sidebar is hidden.
+        .sheet(item: $hostSheet) { destination in
+            // HostListView brings its own NavigationStack.
+            HostListView(
+                store: hosts,
+                initialHostID: destination.hostID,
+                connectionStatuses: console.hostStatuses,
+                standingFailures: console.hostStandingFailures,
+                latencies: console.hostLatencies,
+                manualReconnectInFlightHostIDs: manualReconnectInFlightHostIDs,
+                retryConnection: { await reconnectHost($0) })
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
+        }
+        .sheet(isPresented: $isStartingAgent) {
+            // StartAgentView brings its own NavigationStack.
+            StartAgentView(hosts: hosts.hosts, console: console) { id in
+                // A fresh launch lands in its own terminal, exactly
+                // as tapping the new row would.
+                notificationRouter.path = [id]
+            }
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView(
+                terminal: terminal,
+                appearance: appearance,
+                pushRegistration: pushRegistration,
+                notificationPreferences: notificationPreferences,
+                relaySettings: relaySettings,
+                liveActivities: liveActivities,
+                console: console,
+                hosts: hosts.hosts)
+            .modifier(ConsoleSheetPresentationModifier(
+                presentation: ConsoleSheetPresentation(
+                    horizontalSizeClass: horizontalSizeClass)))
         }
         .modifier(
             ConsoleStatusBarModifier(
@@ -161,7 +204,7 @@ struct ConsoleView: View {
             if let banner = bannerStore.banner {
                 AgentNotificationBannerView(banner: banner) {
                     bannerStore.dismiss()
-                    notificationRouter.open(banner.target)
+                    openNotificationTarget(banner.target)
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -184,6 +227,40 @@ struct ConsoleView: View {
                 self.hostFilter = nil
             }
         }
+        .environment(\.consoleCommandRegistry, commandRegistry)
+        .focusedSceneValue(\.consoleCommandTarget, commandTarget)
+    }
+
+    private var commandTarget: ConsoleCommandTarget {
+        ConsoleCommandTarget(
+            registry: commandRegistry,
+            context: {
+                .init(
+                    selection: notificationRouter.path.last,
+                    agents: listPresentation.mode == .flat
+                        ? filteredAgents.map(\.id)
+                        : hostSections.filter { !$0.isCollapsed }.flatMap { $0.agents.map(\.id) },
+                    isSearchFocused: isSearchFocused,
+                    isCovered: hostSheet != nil || isStartingAgent || isShowingSettings,
+                    inputMode: inputMode.mode)
+            },
+            navigate: { id in
+                guard id != notificationRouter.path.last else { return }
+                if commandRegistry.terminal?.isFocused == true
+                    || commandRegistry.composer?.isFocused == true
+                {
+                    keyboardHandoff.arm(for: id)
+                }
+                notificationRouter.path = [id]
+            },
+            focusSearch: {
+                isSearchPresented = true
+                isSearchFocused = true
+            },
+            newAgent: { isStartingAgent = true },
+            settings: { isShowingSettings = true },
+            hosts: { presentHosts() },
+            closeAgent: { notificationRouter.path = [] })
     }
 
     /// The sidebar selection as a projection of the router's path. Setting
@@ -227,13 +304,17 @@ struct ConsoleView: View {
                     activity: activity,
                     keyboardHandoff: keyboardHandoff,
                     keyboardInset: keyboardInset,
-                    // The router's truth, not SwiftUI's appear/disappear:
-                    // only the screen still selected may rebuild its
-                    // terminal on a spurious reappearance.
-                    isOnStage: { [notificationRouter] in
-                        notificationRouter.path.last == id
-                            && console.agents.contains(where: { $0.id == id })
-                    },
+                    stage: AgentDetailStage(
+                        // The router's truth, not SwiftUI's appear/disappear:
+                        // only the screen still selected may rebuild its
+                        // terminal on a spurious reappearance.
+                        isVisible: { [notificationRouter] in
+                            notificationRouter.path.last == id
+                                && console.agents.contains(where: { $0.id == id })
+                        },
+                        terminalAccess: { [sceneRouting] in
+                            sceneRouting?.terminalAccess(for: id.hostID) ?? .holds
+                        }),
                     onSwitch: { notificationRouter.path = [$0] },
                     onClosed: { notificationRouter.path = [] }
                 )
@@ -254,9 +335,20 @@ struct ConsoleView: View {
                 missingAgentSurface(presentation)
             }
         } else {
-            ContentUnavailableView(
-                "No Agent Selected", systemImage: "rectangle.on.rectangle",
-                description: Text("Choose an Agent to view its live terminal."))
+            ConsoleEmptyDetailView(
+                presentation: ConsoleEmptyDetailPresentation(
+                    hasHosts: !hosts.hosts.isEmpty,
+                    showsAgentsAction: splitVisibility.showsAgentsAction)
+            ) { action in
+                switch action {
+                case .showAgents:
+                    withAnimation(reduceMotion ? nil : .snappy) {
+                        splitVisibility.showSidebar()
+                    }
+                case .newAgent: isStartingAgent = true
+                case .hosts: presentHosts()
+                }
+            }
         }
     }
 
@@ -284,6 +376,7 @@ struct ConsoleView: View {
         } actions: {
             Button("Back to Console") { notificationRouter.path = [] }
                 .buttonStyle(.borderedProminent)
+                .hoverEffect(.highlight)
         }
     }
 
@@ -319,6 +412,7 @@ struct ConsoleView: View {
             } actions: {
                 Button("Add Host") { presentHosts() }
                     .buttonStyle(.borderedProminent)
+                    .hoverEffect(.highlight)
             }
         case .noAgents:
             ContentUnavailableView {
@@ -333,6 +427,7 @@ struct ConsoleView: View {
                     systemImage: "line.3.horizontal.decrease.circle")
             } actions: {
                 Button("Show All Hosts") { hostFilter = nil }
+                    .hoverEffect(.highlight)
             }
         case .noSearchResults:
             ContentUnavailableView {
@@ -342,6 +437,7 @@ struct ConsoleView: View {
             } actions: {
                 Button("Clear Search") { searchText = "" }
                     .buttonStyle(.borderedProminent)
+                    .hoverEffect(.highlight)
             }
         case .rows:
             List(selection: selectedAgent) {
@@ -401,6 +497,7 @@ struct ConsoleView: View {
                 isPinned: console.pins.isPinned(
                     hostID: agent.hostID, paneID: agent.agent.paneID))
         }
+        .hoverEffect(.highlight)
         .contextMenu {
             let pinned = console.pins.isPinned(
                 hostID: agent.hostID, paneID: agent.agent.paneID)
@@ -411,6 +508,35 @@ struct ConsoleView: View {
                 console.togglePin(
                     hostID: agent.hostID, paneID: agent.agent.paneID)
             }
+            // Never on iPhone, and not for the Agent this window already shows.
+            if supportsMultipleWindows, notificationRouter.path.last != agent.id {
+                Button("Open in New Window", systemImage: "plus.rectangle.on.rectangle") {
+                    openInNewWindow(agent)
+                }
+            }
+        }
+        .modifier(
+            AgentWindowDrag(
+                route: AgentRoute(agentID: agent.id),
+                title: agent.agent.displayName,
+                isEnabled: supportsMultipleWindows))
+    }
+
+    /// A window already showing this Agent comes forward instead of a second
+    /// one opening: two windows on one Agent would contend for its Host's
+    /// single terminal channel.
+    private func openInNewWindow(_ agent: ConsoleAgent) {
+        if sceneRouting?.directory.activateScene(presenting: agent.id) == true { return }
+        openWindow(value: AgentRoute(agentID: agent.id))
+    }
+
+    /// Deep links raised inside this window obey the same single-window rule
+    /// as a notification tap.
+    private func openNotificationTarget(_ target: AgentNotificationTarget?) {
+        if let sceneRouting {
+            sceneRouting.open(target)
+        } else {
+            notificationRouter.open(target)
         }
     }
 
@@ -732,6 +858,21 @@ private struct ConsoleHostSectionHeaderView: View {
         .accessibilityValue(presentation.accessibilityValue)
         .accessibilityHint(presentation.accessibilityHint)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// The two ways a selected Agent detail can be on stage. A window whose Host
+/// channel is live in another window still shows its detail, so that detail's
+/// presentations keep covering the window's keyboard commands, while its
+/// Attach stays off stage until the window holds the channel again.
+struct AgentDetailStage {
+    /// The detail is the window's selected, still-listed Agent.
+    let isVisible: () -> Bool
+    let terminalAccess: () -> HostTerminalAccess
+
+    /// Attach start, resize and rejoin: visible and holding the Host's channel.
+    func isOnStage() -> Bool {
+        isVisible() && terminalAccess() == .holds
     }
 }
 

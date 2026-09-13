@@ -13,6 +13,7 @@ import UIKit
 /// down, and the IME's composition survives a round trip through Keys.
 struct ShellTerminalView: View {
     let store: ShellTerminalStore
+    let agentID: ConsoleAgent.ID
     let terminal: TerminalSettings
     let activity: AppActivityCoordinator
     let isReturning: Bool
@@ -77,10 +78,41 @@ struct ShellTerminalView: View {
     }
 
     private var keyboardLayout: AgentComposerKeyboardLayout {
+        Self.keyboardLayout(
+            inset: keyboardInset, presentation: keyboardPresentation)
+    }
+
+    /// A hardware keyboard attaching hides the system keyboard while the
+    /// terminal keeps first responder, so Text stays `.system`; the
+    /// confirmed dismissal is what releases its pin to the last footprint.
+    static func keyboardLayout(
+        inset: TerminalKeyboardInset,
+        presentation: AgentComposerKeyboardPresentation
+    ) -> AgentComposerKeyboardLayout {
         AgentComposerKeyboardLayout(
-            currentHeight: keyboardInset.height,
-            lastPresentedHeight: keyboardInset.lastPresentedHeight,
-            presentation: keyboardPresentation)
+            currentHeight: inset.height,
+            lastPresentedHeight: inset.lastPresentedHeight,
+            presentation: presentation,
+            softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed)
+    }
+
+    /// Keys suppresses the system keyboard, so UIKit really hides it and the
+    /// dismissal is confirmed while the dock is up. Returning to Text
+    /// expects the keyboard again, keeping the pre-show pin until its frame
+    /// arrives.
+    static func prepareKeyboardMode(
+        _ mode: TerminalKeyboardMode, inset: TerminalKeyboardInset
+    ) {
+        switch mode {
+        case .controls:
+            // Candidate bars publish transition-only frames while UIKit
+            // removes the system keyboard; the dock keeps the last complete
+            // measurement instead.
+            inset.pauseHeightCapture()
+        case .text:
+            inset.resumeHeightCapture()
+            inset.expectSoftwareKeyboard()
+        }
     }
 
     private var isKeysDockPresented: Bool {
@@ -129,6 +161,7 @@ struct ShellTerminalView: View {
             // Keyboard avoidance is owned by `TerminalKeyboardInset`; UIKit's
             // keyboard safe area would resize Ghostty a second time.
             .ignoresSafeArea(.keyboard, edges: .bottom)
+            .terminalKeyboardInsetWindow(keyboardInset)
             .background(
                 terminal.themes.selection(for: colorScheme)
                     .surfaceBackground(for: colorScheme)
@@ -190,6 +223,10 @@ struct ShellTerminalView: View {
             } message: {
                 Text(store.pasteErrorMessage ?? "")
             }
+            .modifier(ConsoleDetailPresentationRegistration(
+                agentID: agentID,
+                isPresenting: isConfirmingClose || store.pendingPaste != nil
+                    || store.pasteErrorMessage != nil))
             .onChange(of: activity.activationCount, initial: true) { _, _ in
                 store.didBecomeActive(
                     afterPossibleSuspension: activity.lastAbsenceMayHaveSuspended)
@@ -197,29 +234,43 @@ struct ShellTerminalView: View {
             // A recovered terminal is a fresh surface with no keyboard raised;
             // app-side mode state has to follow it back to Text.
             .onChange(of: store.terminalID) { _, _ in
+                setKeyboardMode(.text, restoresSystemKeyboard: false)
+            }
+            // On iPad the Keys dock stands without a responder, so a tap on
+            // the terminal's input row asks for the system keyboard.
+            .onChange(of: keyboardControl.isFirstResponder) { _, isUp in
+                guard isUp, keyboardMode == .controls,
+                      TerminalKeyboardMode.controlsReleaseFirstResponder
+                else { return }
                 setKeyboardMode(.text)
             }
             .onAppear { store.rejoin() }
             .onDisappear { store.leave() }
     }
 
-    private func setKeyboardMode(_ mode: TerminalKeyboardMode) {
+    /// `restoresSystemKeyboard` is false when Text follows a fresh surface
+    /// rather than the user leaving Keys: nothing was raised to bring back.
+    private func setKeyboardMode(
+        _ mode: TerminalKeyboardMode, restoresSystemKeyboard: Bool = true
+    ) {
         guard mode != keyboardMode else { return }
-        switch mode {
-        case .controls:
-            // Candidate bars publish transition-only frames while UIKit
-            // removes the system keyboard; the dock keeps the last complete
-            // measurement instead.
-            keyboardInset.pauseHeightCapture()
-        case .text:
-            keyboardInset.resumeHeightCapture()
-        }
+        Self.prepareKeyboardMode(mode, inset: keyboardInset)
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             keyboardMode = mode
         }
         keyboardControl.setKeyboardMode(mode)
+        // See `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+        guard TerminalKeyboardMode.controlsReleaseFirstResponder else { return }
+        switch mode {
+        case .controls:
+            keyboardControl.dismissKeyboard()
+        case .text:
+            if restoresSystemKeyboard, !keyboardControl.isFirstResponder {
+                keyboardControl.requestKeyboard()
+            }
+        }
     }
 
     private var themePalette: TerminalThemePalette {
@@ -298,6 +349,11 @@ struct ShellTerminalInputRow: View {
     /// borrowed from a different set.
     private static let glyphPointSize: CGFloat = 12
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var sizeClass: InputShortcutStripPresentation.SizeClass {
+        horizontalSizeClass == .regular ? .regular : .compact
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -311,7 +367,9 @@ struct ShellTerminalInputRow: View {
             // to the mode control. Painting the fill with the row's own
             // background leaves the glyph reading as a bare icon.
             .tint(Color(uiColor: .secondarySystemBackground))
-            .frame(width: 44, height: 44)
+            .frame(
+                width: InputChromeLayout.shellAccessoryButtonWidth,
+                height: InputChromeLayout.shortcutRowHeight)
 
             Spacer(minLength: 4)
 
@@ -320,7 +378,7 @@ struct ShellTerminalInputRow: View {
                 Text("Keys").tag(TerminalKeyboardMode.controls)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 184)
+            .frame(maxWidth: InputChromeLayout.modePickerMaxWidth(for: sizeClass))
 
             Spacer(minLength: 4)
 
@@ -328,7 +386,9 @@ struct ShellTerminalInputRow: View {
                 Image(systemName: "text.append")
                     .font(.system(size: Self.glyphPointSize))
                     .foregroundStyle(Color(uiColor: .label))
-                    .frame(width: 44, height: 44)
+                    .frame(
+                        width: InputChromeLayout.shellAccessoryButtonWidth,
+                        height: InputChromeLayout.shortcutRowHeight)
             }
             .accessibilityLabel("Insert New Line")
             .accessibilityHint("Adds a line break without submitting")
@@ -405,10 +465,14 @@ struct ShellTerminalKeysDock: View {
 private struct ShellTerminalEdgeBackGesture: View {
     let isEnabled: Bool
     let onBack: @MainActor () async -> Void
+    /// Hit strip along the leading edge. Not input-chrome width; named so
+    /// this file has no raw width literals.
+    private static let hitWidth: CGFloat = 24
+    private static let minimumTranslation: CGFloat = 72
 
     var body: some View {
         Color.clear
-            .frame(width: 24)
+            .frame(width: Self.hitWidth)
             .frame(maxHeight: .infinity)
             .contentShape(.rect)
             .gesture(
@@ -416,8 +480,8 @@ private struct ShellTerminalEdgeBackGesture: View {
                     .onEnded { value in
                         let horizontal = value.translation.width
                         guard isEnabled,
-                            value.startLocation.x <= 24,
-                            horizontal >= 72,
+                            value.startLocation.x <= Self.hitWidth,
+                            horizontal >= Self.minimumTranslation,
                             abs(value.translation.height) <= horizontal * 0.75
                         else { return }
                         Task { await onBack() }

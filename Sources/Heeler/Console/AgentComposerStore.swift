@@ -7,6 +7,13 @@ import Observation
 protocol ComposerDraftOperations: AnyObject {
     func replaceDraft(with text: String)
     func insertIntoDraft(_ text: String)
+    func abandonDroppedImagesForTeardown()
+    func resumeDroppedImagesAfterRejoin()
+}
+
+extension ComposerDraftOperations {
+    func abandonDroppedImagesForTeardown() {}
+    func resumeDroppedImagesAfterRejoin() {}
 }
 
 /// Owns Agent detail's local draft and delivery state. Draft edits do not
@@ -52,6 +59,8 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     private(set) var messages: [Message] = []
     private(set) var draft = ""
+    /// UTF-16 caret/selection, matching the Composer text view.
+    private(set) var draftSelection = NSRange(location: 0, length: 0)
 
     private let target: String
     private var agentStatus: AgentStatus
@@ -64,6 +73,36 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// one Attach pipeline (reconnect replacement), and a dead writer must
     /// fail the Blocked path rather than retain a stale session.
     @ObservationIgnored private weak var attachInput: TerminalInputController?
+    /// ADR 0006 picker path. Weak through the bind so staging can keep the
+    /// Composer as its draft owner without a retain cycle.
+    @ObservationIgnored private weak var staging: ComposerStagingStore?
+    /// Dropped images waiting for `ComposerStagingStore.begin(_:)`. Each item
+    /// owns a unique placeholder already inserted in `draft`.
+    @ObservationIgnored private var pendingDroppedImages: [PendingDroppedImage] = []
+    /// Set by ``abandonDroppedImagesForTeardown()`` so leave/cancel events
+    /// cannot start the next queued upload.
+    @ObservationIgnored private var isTearingDownDroppedImages = false
+
+    private struct PendingDroppedImage {
+        enum Status: Equatable {
+            case queued
+            case staging(operationID: UInt64)
+            case awaitingOutcome(operationID: UInt64, retryable: Bool)
+        }
+
+        let data: Data
+        let placeholder: String
+        var status: Status
+
+        var blocksQueue: Bool {
+            switch status {
+            case .queued:
+                false
+            case .staging, .awaitingOutcome:
+                true
+            }
+        }
+    }
 
     init(
         target: String,
@@ -82,15 +121,129 @@ final class AgentComposerStore: ComposerDraftOperations {
     }
 
     var canSend: Bool {
-        draft.contains(where: { !$0.isWhitespace })
+        !hasPendingDroppedImages && draft.contains(where: { !$0.isWhitespace })
+    }
+
+    var hasPendingDroppedImages: Bool {
+        !pendingDroppedImages.isEmpty
+    }
+
+    /// VoiceOver hint for the Send button. Pending drops disable Send.
+    var sendAccessibilityHint: String {
+        hasPendingDroppedImages
+            ? "Waiting for image…"
+            : "Delivers the complete draft to the Agent"
+    }
+
+    var pendingDropPlaceholders: [String] {
+        pendingDroppedImages.map(\.placeholder)
     }
 
     func replaceDraft(with text: String) {
         draft = text
+        draftSelection = NSRange(location: (text as NSString).length, length: 0)
     }
 
+    /// Inserts at the current caret, or replaces the current selection. This
+    /// is the Snippet / Skill / staged-path insertion path: the draft changes
+    /// and nothing is submitted.
     func insertIntoDraft(_ text: String) {
-        draft.append(text)
+        let range = Self.clamped(draftSelection, to: draft)
+        draft = (draft as NSString).replacingCharacters(in: range, with: text)
+        draftSelection = NSRange(
+            location: range.location + (text as NSString).length,
+            length: 0)
+    }
+
+    func setDraftSelection(_ range: NSRange) {
+        let clamped = Self.clamped(range, to: draft)
+        guard draftSelection != clamped else { return }
+        draftSelection = clamped
+    }
+
+    /// Typing and selection changes from the Composer text view. Unlike
+    /// ``replaceDraft(with:)``, this keeps the view's caret.
+    func applyEditorDraft(_ text: String, selection: NSRange) {
+        let clamped = Self.clamped(selection, to: text)
+        guard draft != text || draftSelection != clamped else { return }
+        draft = text
+        draftSelection = clamped
+    }
+
+    /// Forwards dropped images onto ``ComposerStagingStore.begin(_:)``, the
+    /// same call the photo picker uses. One operation at a time; extras queue.
+    func bindStaging(_ staging: ComposerStagingStore) {
+        self.staging = staging
+        isTearingDownDroppedImages = false
+        staging.onOperationEvent = { [weak self] event in
+            self?.handleDroppedImageStagingEvent(event)
+        }
+        startNextDroppedImageIfNeeded()
+    }
+
+    /// Maps a drop onto draft insertion and/or the ADR 0006 staging path.
+    /// Empty and unsupported items are skipped without touching the draft or
+    /// submitting it. Each image inserts a unique placeholder; later text
+    /// stays after it, and the Host path replaces that token.
+    func acceptDrop(_ items: [ComposerDropItem]) {
+        for item in items {
+            switch item {
+            case .text(let text):
+                guard !text.isEmpty else { continue }
+                insertIntoDraft(text)
+            case .image(let data, _):
+                guard !data.isEmpty else { continue }
+                reserveDroppedImage(data)
+            case .unsupported:
+                continue
+            }
+        }
+        startNextDroppedImageIfNeeded()
+    }
+
+    /// Visible token inserted for a queued drop. Private-use scalars plus a
+    /// UUID fragment so ordinary user text cannot collide with it.
+    static func makeDropPlaceholder(uuid: UUID = UUID()) -> String {
+        let hex = String(
+            uuid.uuidString.replacingOccurrences(of: "-", with: "").prefix(8)
+        ).lowercased()
+        return "\u{E000}img:\(hex)\u{E001}"
+    }
+
+    static func containsDropPlaceholder(_ text: String) -> Bool {
+        let prefix = "\u{E000}img:"
+        let suffix: Character = "\u{E001}"
+        var search = text.startIndex
+        while let start = text[search...].range(of: prefix) {
+            let hexStart = start.upperBound
+            guard let hexEnd = text.index(hexStart, offsetBy: 8, limitedBy: text.endIndex),
+                hexEnd < text.endIndex,
+                text[hexEnd] == suffix,
+                text[hexStart..<hexEnd].allSatisfy(\.isHexDigit)
+            else {
+                search = start.upperBound
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    /// Clears queued drops and their tokens before staging teardown. Later
+    /// cancel/dismiss events must not start another upload.
+    func abandonDroppedImagesForTeardown() {
+        isTearingDownDroppedImages = true
+        for item in pendingDroppedImages {
+            applyTokenReplacement(item.placeholder, firstReplacement: "")
+        }
+        pendingDroppedImages.removeAll()
+    }
+
+    /// Called after a serial leave has finished. Same-store rejoin does not
+    /// reconstruct Attach or re-bind staging.
+    func resumeDroppedImagesAfterRejoin() {
+        isTearingDownDroppedImages = false
+        startNextDroppedImageIfNeeded()
     }
 
     /// Completes an inline Skill suggestion: swaps the typed trigger token at
@@ -101,6 +254,7 @@ final class AgentComposerStore: ComposerDraftOperations {
         guard !token.isEmpty, draft.hasSuffix(token) else { return }
         draft.removeLast(token.count)
         draft.append(text)
+        draftSelection = NSRange(location: (draft as NSString).length, length: 0)
     }
 
     /// Starts consuming Console's existing per-Agent status fan-out. This
@@ -127,7 +281,7 @@ final class AgentComposerStore: ComposerDraftOperations {
 
     @discardableResult
     func send() async -> SendResult {
-        guard canSend else { return .ignored }
+        guard canSend, !containsPendingPlaceholderInDraft else { return .ignored }
         let message = Message(
             id: UUID(), text: draft,
             agentWasWorkingAtSend: agentStatus == .working,
@@ -136,6 +290,7 @@ final class AgentComposerStore: ComposerDraftOperations {
             tracksAgentProgress: true,
             state: .sending)
         draft = ""
+        draftSelection = NSRange(location: 0, length: 0)
         messages.append(message)
         return await deliver(message.id)
     }
@@ -192,6 +347,9 @@ final class AgentComposerStore: ComposerDraftOperations {
     private func deliver(_ id: Message.ID) async -> SendResult {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return .ignored }
         let text = messages[index].text
+        if Self.containsDropPlaceholder(text) {
+            return .ignored
+        }
         if agentStatus == .blocked {
             return deliverThroughAttach(id, text: text)
         }
@@ -221,6 +379,7 @@ final class AgentComposerStore: ComposerDraftOperations {
     /// Those bytes already cross `TerminalInputController`'s writer, which
     /// indexes them; do not also `record(submitted:)` here.
     private func deliverThroughAttach(_ id: Message.ID, text: String) -> SendResult {
+        guard !Self.containsDropPlaceholder(text) else { return .ignored }
         guard TerminalTextSafety.containsOnlySafeScalars(text) else {
             return fail(id, message: Self.unsafeTextMessage)
         }
@@ -281,6 +440,141 @@ final class AgentComposerStore: ComposerDraftOperations {
         "The message could not be sent. Check the connection and retry."
     private static let unsafeTextMessage =
         "The message contains unsafe terminal control characters."
+
+    private var containsPendingPlaceholderInDraft: Bool {
+        pendingDroppedImages.contains { draft.contains($0.placeholder) }
+            || Self.containsDropPlaceholder(draft)
+    }
+
+    private func reserveDroppedImage(_ data: Data) {
+        let placeholder = Self.makeDropPlaceholder()
+        insertIntoDraft(placeholder)
+        pendingDroppedImages.append(
+            PendingDroppedImage(
+                data: data,
+                placeholder: placeholder,
+                status: .queued))
+    }
+
+    private func handleDroppedImageStagingEvent(_ event: ComposerStagingStore.OperationEvent) {
+        guard !isTearingDownDroppedImages else { return }
+        switch event {
+        case .completed(let id, let path):
+            fulfillDroppedImage(id: id, path: path)
+        case .cancelled(let id), .dismissed(let id):
+            abandonDroppedImage(id: id)
+        case .failed(let id, let retryable):
+            failDroppedImage(id: id, retryable: retryable)
+        }
+        startNextDroppedImageIfNeeded()
+    }
+
+    private func fulfillDroppedImage(id: UInt64, path: String) {
+        guard let index = indexOfDroppedImage(id: id) else { return }
+        let placeholder = pendingDroppedImages[index].placeholder
+        pendingDroppedImages.remove(at: index)
+        let insertion = "\(path) "
+        if !applyTokenReplacement(placeholder, firstReplacement: insertion) {
+            insertIntoDraft(insertion)
+        }
+    }
+
+    private func abandonDroppedImage(id: UInt64) {
+        guard let index = indexOfDroppedImage(id: id) else { return }
+        let placeholder = pendingDroppedImages[index].placeholder
+        pendingDroppedImages.remove(at: index)
+        applyTokenReplacement(placeholder, firstReplacement: "")
+    }
+
+    private func failDroppedImage(id: UInt64, retryable: Bool) {
+        guard let index = indexOfDroppedImage(id: id) else { return }
+        if retryable {
+            pendingDroppedImages[index].status = .awaitingOutcome(
+                operationID: id,
+                retryable: true)
+            return
+        }
+        abandonDroppedImage(id: id)
+    }
+
+    private func startNextDroppedImageIfNeeded() {
+        guard let staging, !isTearingDownDroppedImages else { return }
+        if pendingDroppedImages.contains(where: { $0.blocksQueue }) { return }
+        switch staging.state {
+        case .idle, .completed:
+            break
+        case .failed, .backgroundInterrupted, .preparing, .uploading:
+            return
+        }
+        guard let index = pendingDroppedImages.firstIndex(where: { $0.status == .queued })
+        else { return }
+        guard
+            let id = staging.begin(
+                .photo(DataImageSelection(data: pendingDroppedImages[index].data)),
+                insertPathIntoComposer: false)
+        else { return }
+        pendingDroppedImages[index].status = .staging(operationID: id)
+    }
+
+    private func indexOfDroppedImage(id: UInt64) -> Int? {
+        pendingDroppedImages.firstIndex { item in
+            switch item.status {
+            case .staging(let operationID), .awaitingOutcome(let operationID, _):
+                operationID == id
+            case .queued:
+                false
+            }
+        }
+    }
+
+    /// Replaces the first exact token and deletes any later copies the user
+    /// duplicated. Returns false when the token is gone.
+    @discardableResult
+    private func applyTokenReplacement(_ token: String, firstReplacement: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        var found = false
+        var isFirst = true
+        while true {
+            let range = (draft as NSString).range(of: token)
+            guard range.location != NSNotFound else { break }
+            let replacement = isFirst ? firstReplacement : ""
+            draft = (draft as NSString).replacingCharacters(in: range, with: replacement)
+            draftSelection = Self.selection(
+                afterReplacing: range,
+                with: (replacement as NSString).length,
+                current: draftSelection)
+            found = true
+            isFirst = false
+        }
+        return found
+    }
+
+    private static func selection(
+        afterReplacing range: NSRange,
+        with replacementLength: Int,
+        current: NSRange
+    ) -> NSRange {
+        let delta = replacementLength - range.length
+        let rangeEnd = range.location + range.length
+        if current.location >= rangeEnd {
+            return NSRange(location: current.location + delta, length: current.length)
+        }
+        if current.location + current.length <= range.location {
+            return current
+        }
+        return NSRange(location: range.location + replacementLength, length: 0)
+    }
+
+    private static func clamped(_ range: NSRange, to text: String) -> NSRange {
+        let length = (text as NSString).length
+        guard range.location != NSNotFound else {
+            return NSRange(location: length, length: 0)
+        }
+        let location = min(max(range.location, 0), length)
+        let remaining = length - location
+        let clampedLength = min(max(range.length, 0), remaining)
+        return NSRange(location: location, length: clampedLength)
+    }
 
     static func message(for error: any Error) -> String {
         switch error {
