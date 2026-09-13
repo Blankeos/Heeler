@@ -1747,7 +1747,12 @@ struct TerminalAttachTests {
         inset.destinationResponderHandoffFallbackDelay = .seconds(60)
         try await Self.presentThenHide(inset, center: center)
 
+        // Entry precondition, checked in the same synchronous section as
+        // the begin: the dismissal is still pending, not already confirmed.
+        try #require(inset.isConfirmingDismissal)
+        try #require(!inset.isSoftwareKeyboardDismissed)
         let handoffID = inset.beginDestinationOwnedResponderHandoff()
+        #expect(!inset.isConfirmingDismissal)
         inset.endResponderHandoff(handoffID, currentHeight: { measured })
         #expect(!inset.isHoldingHandoffHeight)
 
@@ -1758,9 +1763,59 @@ struct TerminalAttachTests {
             #expect(Self.systemContentInset(inset) == 383)
         } else {
             #expect(inset.height == 0)
+            // The end re-armed the confirmation the begin had carried.
+            #expect(inset.isConfirmingDismissal)
+            #expect(!inset.isSoftwareKeyboardDismissed)
             try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
             #expect(Self.systemContentInset(inset) == 0)
         }
+    }
+
+    /// After a confirmed dismissal nothing is owed, yet the software keyboard
+    /// can come back during a Direct-to-Composer freeze (a hardware keyboard
+    /// detaches mid-transfer). Its frame is discarded while holding, so every
+    /// exit must adopt the keyboard the window measures, or the Composer
+    /// stays below a visible keyboard.
+    @MainActor
+    @Test(arguments: ["end", "cancel", "fallback"])
+    func aKeyboardPresentedDuringAHandoffAfterAConfirmedDismissalIsAdoptedOnExit(
+        exit: String
+    ) async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        inset.responderHandoffFallbackDelay = exit == "fallback" ? .milliseconds(30) : .seconds(60)
+        inset.destinationResponderHandoffFallbackDelay = .seconds(60)
+        try await Self.presentThenHide(inset, center: center)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(!inset.isConfirmingDismissal)
+
+        let handoffID =
+            exit == "end"
+            ? inset.beginDestinationOwnedResponderHandoff(currentHeight: { 383 })
+            : inset.beginResponderHandoff(currentHeight: { 383 })
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        // Discarded by the freeze.
+        #expect(inset.height == 0)
+        #expect(inset.isSoftwareKeyboardDismissed)
+
+        switch exit {
+        case "end":
+            inset.endResponderHandoff(handoffID, currentHeight: { 383 })
+        case "cancel":
+            inset.cancelResponderHandoff(handoffID, currentHeight: { 383 })
+        default:
+            try #require(await Self.eventually { !inset.isHoldingHandoffHeight })
+        }
+
+        #expect(!inset.isHoldingHandoffHeight)
+        #expect(inset.height == 383)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(!inset.isConfirmingDismissal)
+        #expect(Self.systemContentInset(inset) == 383)
     }
 
     @MainActor

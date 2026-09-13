@@ -202,9 +202,10 @@ final class TerminalKeyboardInset {
             self.activeResponderHandoffID = nil
             let owesDismissal = self.owesDismissalAfterResponderHandoff
             self.owesDismissalAfterResponderHandoff = false
-            if owesDismissal {
-                self.settleDismissal(measuredHeight: currentHeight() ?? 0)
-            }
+            let measuredHeight = currentHeight()
+            self.reconcileResponderHandoffExit(
+                owesDismissal: owesDismissal,
+                measuredHeight: owesDismissal ? measuredHeight ?? 0 : measuredHeight)
             onFallback(id)
         }
         return id
@@ -227,9 +228,8 @@ final class TerminalKeyboardInset {
             self.activeResponderHandoffID = nil
             let owesDismissal = self.owesDismissalAfterResponderHandoff
             self.owesDismissalAfterResponderHandoff = false
-            if owesDismissal {
-                self.settleDismissal(measuredHeight: currentHeight())
-            }
+            self.reconcileResponderHandoffExit(
+                owesDismissal: owesDismissal, measuredHeight: currentHeight())
             onFallback(id)
         }
         return id
@@ -261,11 +261,10 @@ final class TerminalKeyboardInset {
         currentHeight: @escaping @MainActor () -> CGFloat? = { nil }
     ) {
         guard activeResponderHandoffID == id else { return }
-        let owesDismissal = releaseResponderHandoff()
-        guard owesDismissal else { return }
-        let measuredHeight = currentHeight()
-        if let measuredHeight, measuredHeight > 0, height > 0 { return }
-        settleDismissal(measuredHeight: measuredHeight)
+        reconcileResponderHandoffExit(
+            owesDismissal: releaseResponderHandoff(),
+            measuredHeight: currentHeight(),
+            keepsVisibleHeight: true)
     }
 
     private func releaseResponderHandoff() -> Bool {
@@ -284,8 +283,31 @@ final class TerminalKeyboardInset {
         currentHeight: @escaping @MainActor () -> CGFloat? = { nil }
     ) {
         guard activeResponderHandoffID == id else { return }
-        guard releaseResponderHandoff() else { return }
-        settleDismissal(measuredHeight: currentHeight())
+        reconcileResponderHandoffExit(
+            owesDismissal: releaseResponderHandoff(),
+            measuredHeight: currentHeight())
+    }
+
+    /// Every handoff exit reconciles against the owning window. An owed
+    /// dismissal is settled against the measurement; `keepsVisibleHeight`
+    /// keeps a positive frozen height while the keyboard still measures up
+    /// (the destination's settle contract). With nothing owed, a frozen zero
+    /// inset still adopts a keyboard measured up at exit: its presentation
+    /// was discarded inside the freeze (a hardware keyboard detached during
+    /// the transfer), and no later frame would restore it.
+    private func reconcileResponderHandoffExit(
+        owesDismissal: Bool,
+        measuredHeight: CGFloat?,
+        keepsVisibleHeight: Bool = false
+    ) {
+        if owesDismissal {
+            if keepsVisibleHeight, let measuredHeight, measuredHeight > 0, height > 0 {
+                return
+            }
+            settleDismissal(measuredHeight: measuredHeight)
+        } else if height == 0, let measuredHeight, measuredHeight > 0 {
+            settleDismissal(measuredHeight: measuredHeight)
+        }
     }
 
     /// Commits an owed dismissal. A measurement is authoritative; without
