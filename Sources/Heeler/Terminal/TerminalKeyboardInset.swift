@@ -407,18 +407,25 @@ final class TerminalKeyboardInset {
             bottomSafeArea: window.safeAreaInsets.bottom)
     }
 
-    /// How far the keyboard reaches above the terminal's bottom edge as
-    /// `window`'s keyboard layout guide tracks it, under the same ownership
-    /// rule as `coveredHeight(of:in:)`. The guide rests on the bottom safe
-    /// area while no keyboard is docked, which measures zero.
+    /// How far the keyboard reaches above the terminal's bottom edge as the
+    /// keyboard layout guide tracks it, under the same ownership rule as
+    /// `coveredHeight(of:in:)`. The guide rests on the bottom safe area while
+    /// no keyboard is docked, which measures zero.
+    ///
+    /// The guide is read from the window's root view: a `UIWindow`'s own
+    /// `keyboardLayoutGuide` is never laid out, and its `layoutFrame` stayed
+    /// `.zero` on the iPad under a visible keyboard while the root hosting
+    /// view's guide reported `(0, 973, 1032, 403)`.
     static func layoutGuideHeight(in window: UIWindow) -> CGFloat? {
         guard let scene = window.windowScene,
             windowOwnsKeyboard(
                 isKeyWindow: window.isKeyWindow,
                 isSceneKeyWindow: scene.keyWindow === window,
-                activationState: scene.activationState)
+                activationState: scene.activationState),
+            let rootView = window.rootViewController?.view
         else { return nil }
-        let frame = window.bounds.intersection(window.keyboardLayoutGuide.layoutFrame)
+        let guideFrame = rootView.convert(rootView.keyboardLayoutGuide.layoutFrame, to: window)
+        let frame = window.bounds.intersection(guideFrame)
         let includesBottomSafeArea = abs(frame.maxY - window.bounds.maxY) <= 1
         return insetHeight(
             covered: frame.height,

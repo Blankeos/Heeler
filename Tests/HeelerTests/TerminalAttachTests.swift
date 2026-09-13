@@ -1920,6 +1920,46 @@ struct TerminalAttachTests {
         #expect(inset.isConfirmingDismissal)
     }
 
+    /// The did-show reconciliation reads the real keyboard layout guide. On
+    /// the iPad a `UIWindow`'s own `keyboardLayoutGuide` kept a `.zero`
+    /// layout frame under a visible keyboard, so the dropped presentation
+    /// settled at nothing; the window's root view tracks the keyboard. Needs
+    /// a device that presents the software keyboard.
+    @MainActor
+    @Test func aDroppedPresentationSettlesAgainstTheWindowsLiveKeyboardLayoutGuide()
+        async throws
+    {
+        let controller = UIViewController()
+        let field = UITextField(frame: CGRect(x: 20, y: 80, width: 240, height: 44))
+        controller.view.addSubview(field)
+        let window = try await makeTestWindow(
+            frame: UIScreen.main.bounds, rootViewController: controller)
+        defer {
+            field.resignFirstResponder()
+            window.isHidden = true
+        }
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center)
+        inset.attach(to: window)
+
+        #expect(field.becomeFirstResponder())
+        try #require(await Self.eventually {
+            (TerminalKeyboardInset.layoutGuideHeight(in: window) ?? 0) > 0
+        })
+        let keyboardHeight = try #require(TerminalKeyboardInset.layoutGuideHeight(in: window))
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: window.bounds.maxY, width: window.bounds.width,
+                height: keyboardHeight + window.safeAreaInsets.bottom)])
+        #expect(inset.height == 0)
+
+        center.post(name: UIResponder.keyboardDidShowNotification, object: nil)
+        #expect(inset.height == keyboardHeight)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+    }
+
     /// Focusing the Composer with a hardware keyboard attached, as the iPad
     /// simulator publishes it: a zero-height frame at the bottom edge, then
     /// will-hide, confirmed.
