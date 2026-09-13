@@ -33,6 +33,8 @@ Entries reference the issue that motivated them.
 
 ### Changed
 
+- Direct Input's More button matches the arrow key size and shortcut spacing,
+  with equal padding at the strip's outer edges.
 - The custom Terminal, Agent, and Skills keyboards fill iPad width instead
   of an iPhone-sized well.
 - On iPad the Composer's tools dock, Direct Input's Keys dock, and the

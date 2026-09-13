@@ -109,12 +109,13 @@ struct AgentDirectInputChrome: View {
                 .padding(.trailing, 6)
             }
 
-            HStack(spacing: 0) {
+            HStack(spacing: 4) {
                 ForEach(strip.trailingItems, id: \.self) { item in
                     sizedStripItem(item)
                 }
             }
             .padding(.leading, 4)
+            .padding(.trailing, 8)
             .background(Color(uiColor: .secondarySystemBackground))
             .overlay(alignment: .leading) {
                 LinearGradient(

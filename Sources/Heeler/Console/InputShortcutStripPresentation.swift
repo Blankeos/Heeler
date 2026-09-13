@@ -52,7 +52,7 @@ enum InputChromeLayout {
     static let compactArrowWidth: CGFloat = 30
     /// Backspace and other wide utility caps on the compact strip.
     static let compactWideKeyWidth: CGFloat = 72
-    static let compactMoreWidth: CGFloat = 44
+    static let compactMoreWidth: CGFloat = compactArrowWidth
     /// `UIPasteControl` disables itself below this side length.
     static let pasteControlSide: CGFloat = 34
     /// Visual width after scaling the paste control down to the key-cap size.
