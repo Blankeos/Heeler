@@ -32,7 +32,14 @@ gates. See [Sidebar layout snapshot (v1)](#sidebar-layout-snapshot-v1).
 
 On a new machine, first install the requirements above and make sure the
 OpenSSH server is running. On macOS, enable **System Settings > General >
-Sharing > Remote Login**. Confirm the command-line requirements:
+Sharing > Remote Login**. If `/etc/ssh` still has no `ssh_host_*_key.pub`
+files, generate them:
+
+```bash
+sudo ssh-keygen -A
+```
+
+Confirm the command-line requirements:
 
 ```bash
 herdr --version   # 0.7.5 or newer
@@ -59,6 +66,9 @@ Open the Pairing Code popup:
 ```bash
 herdr plugin action invoke heeler.pair
 ```
+
+The QR, and any reason pairing cannot start, appear in a Herdr popup window,
+not in the terminal that ran invoke.
 
 Scan the code in Heeler to add this machine as a Host, or press `c` on the
 QR screen to copy the Pairing Code and paste it in the app (macOS uses

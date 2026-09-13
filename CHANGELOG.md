@@ -9,6 +9,10 @@ Entries reference the issue that motivated them.
 
 ### Fixed
 
+- The pairing popup keeps startup errors on screen until a keypress, instead
+  of exiting immediately and closing the Herdr pane. Missing SSH host keys
+  now tell the user to enable Remote Login or run `sudo ssh-keygen -A`.
+  (#319)
 - Agent List Fields no longer refuses every edit after a build with a
   different field set saved on the same device: field names this build does
   not know are dropped on load instead of making the whole saved catalog
