@@ -46,6 +46,19 @@ Entries reference the issue that motivated them.
   action in empty detail, form sheets for Hosts, Settings, New Agent, Skills,
   Rename, Snippets, and Worktree, plus Attach Links popovers.
 
+### Fixed
+
+- The pairing popup keeps startup errors on screen until a keypress, instead
+  of exiting immediately and closing the Herdr pane. Missing SSH host keys
+  now tell the user to enable Remote Login or run `sudo ssh-keygen -A`.
+  (#319)
+- Agent List Fields no longer refuses every edit after a build with a
+  different field set saved on the same device: field names this build does
+  not know are dropped on load instead of making the whole saved catalog
+  unreadable. When the saved fields truly cannot be read, both Agent List
+  Fields screens say so before any edit, keep the fields read-only, and offer
+  Reset Saved Fields. (#320; PR #321)
+
 ## [0.1.7] - 2026-09-12
 
 ### Added

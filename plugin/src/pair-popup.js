@@ -30,6 +30,13 @@ import {
   selectedAddresses,
 } from "./select-list.js";
 import { copyPairingCode, qrKeyAction } from "./copy-pairing-code.js";
+import {
+  MISSING_ADDRESS,
+  MISSING_HOST_KEY,
+  MISSING_STATE_DIR,
+  fatalLines,
+  pairingStartFailed,
+} from "./pair-fatal.js";
 
 const DEFAULT_SSH_PORT = 22;
 // How often the QR screen checks whether Enrollment has completed. The pending
@@ -49,9 +56,28 @@ const DIM = "\u001b[2m";
 const REVERSE = "\u001b[7m";
 const RESET = "\u001b[0m";
 
-function fatal(message) {
-  process.stdout.write(`${CLEAR}${BOLD}Pairing cannot start${RESET}\n\n${message}\n`);
-  process.exitCode = 1;
+function paintFatal(message) {
+  const lines = [...fatalLines(message)];
+  lines[0] = `${BOLD}${lines[0]}${RESET}`;
+  lines[lines.length - 1] = `${DIM}${lines[lines.length - 1]}${RESET}`;
+  process.stdout.write(CLEAR + lines.join("\n") + "\n");
+}
+
+// herdr closes the popup when this process exits. Hold the error until a
+// keypress so the user can read it.
+function waitForAnyKey() {
+  return new Promise((resolve) => {
+    emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.once("keypress", () => resolve());
+  });
+}
+
+async function holdFatal(message) {
+  paintFatal(message);
+  await waitForAnyKey();
+  process.exit(1);
 }
 
 function renderChecklist(state, warning) {
@@ -174,21 +200,24 @@ async function main() {
     return;
   }
 
+  process.stdout.write(HIDE_CURSOR);
+  process.on("exit", () => process.stdout.write(SHOW_CURSOR));
+
   const stateDir = process.env.HERDR_PLUGIN_STATE_DIR;
   if (!stateDir) {
-    fatal("HERDR_PLUGIN_STATE_DIR is not set. Run this popup through herdr.");
+    await holdFatal(MISSING_STATE_DIR);
     return;
   }
   const home = os.homedir();
 
   const hostKey = readHostKeyFingerprint();
   if (hostKey === null) {
-    fatal("No SSH host key found under /etc/ssh. Is an OpenSSH server set up here?");
+    await holdFatal(MISSING_HOST_KEY);
     return;
   }
   const candidates = candidateAddresses();
   if (candidates.length === 0) {
-    fatal("No routable network address found. Connect to a LAN or VPN and retry.");
+    await holdFatal(MISSING_ADDRESS);
     return;
   }
 
@@ -371,13 +400,19 @@ async function main() {
 
   function startCeremonyOrDie() {
     startCeremony().catch((error) => {
-      fatal(`Could not start pairing: ${error.message}`);
-      void close(1);
+      phase = "fatal";
+      if (expiryTimer !== null) {
+        clearTimeout(expiryTimer);
+        expiryTimer = null;
+      }
+      if (enrollWatch !== null) {
+        clearInterval(enrollWatch);
+        enrollWatch = null;
+      }
+      paintFatal(pairingStartFailed(error.message));
     });
   }
 
-  process.stdout.write(HIDE_CURSOR);
-  process.on("exit", () => process.stdout.write(SHOW_CURSOR));
   renderChecklist(state);
 
   readKeys((key) => {
@@ -387,6 +422,10 @@ async function main() {
     // Ignore every key while a revoke or the expiry check is in flight; both
     // are fast and a stray press must not close the popup before they settle.
     if (phase === "revoking" || phase === "expiring") {
+      return;
+    }
+    if (phase === "fatal") {
+      void close(1);
       return;
     }
     if (key.name === "q" || key.name === "escape" || (key.ctrl && key.name === "c")) {
