@@ -272,7 +272,7 @@ extension HeelerTerminalView {
         return TerminalKeyboardInset.keyboardFrame(
             frameInWindow,
             matches: keyboardLayoutFrameProvider?(window)
-                ?? window.keyboardLayoutGuide.layoutFrame,
+                ?? TerminalKeyboardInset.keyboardLayoutGuideFrame(in: window) ?? .zero,
             in: window)
     }
 }

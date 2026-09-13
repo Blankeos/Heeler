@@ -1237,11 +1237,7 @@ struct AgentTerminalView: View {
 
     private func currentWindowKeyboardHeight() -> CGFloat? {
         guard let window = keyboardControl.terminal?.window else { return nil }
-        let frame = window.bounds.intersection(window.keyboardLayoutGuide.layoutFrame)
-        let includesBottomSafeArea = abs(frame.maxY - window.bounds.maxY) <= 1
-        return TerminalKeyboardInset.insetHeight(
-            covered: frame.height,
-            bottomSafeArea: includesBottomSafeArea ? window.safeAreaInsets.bottom : 0)
+        return TerminalKeyboardInset.layoutGuideHeight(in: window)
     }
 
     private func cancelKeyboardHandoffs() {

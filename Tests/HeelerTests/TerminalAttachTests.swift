@@ -1960,6 +1960,36 @@ struct TerminalAttachTests {
         #expect(!inset.isSoftwareKeyboardDismissed)
     }
 
+    /// The Composer ends its keyboard handoff when a settled frame matches
+    /// the keyboard layout guide. Matched against the window's own guide,
+    /// which never leaves `.zero`, no frame ever matched and every handoff
+    /// waited out its fallback. Needs a device that presents the software
+    /// keyboard.
+    @MainActor
+    @Test func theComposerSettlesItsHandoffAgainstTheLiveKeyboardLayoutGuide()
+        async throws
+    {
+        let controller = UIViewController()
+        let composer = AgentComposerUITextView(
+            frame: CGRect(x: 20, y: 80, width: 240, height: 44))
+        composer.updateKeyboard(presentation: .system)
+        controller.view.addSubview(composer)
+        let window = try await makeTestWindow(
+            frame: UIScreen.main.bounds, rootViewController: controller)
+        defer {
+            composer.resignFirstResponder()
+            window.isHidden = true
+        }
+        var settledIDs: [UUID] = []
+        composer.onKeyboardHandoffSettled = { settledIDs.append($0) }
+
+        let id = UUID()
+        #expect(composer.requestKeyboardHandoff(id: id))
+        try #require(await Self.eventually { !settledIDs.isEmpty })
+        #expect(settledIDs == [id])
+        #expect((TerminalKeyboardInset.layoutGuideHeight(in: window) ?? 0) > 0)
+    }
+
     /// Focusing the Composer with a hardware keyboard attached, as the iPad
     /// simulator publishes it: a zero-height frame at the bottom edge, then
     /// will-hide, confirmed.

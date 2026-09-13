@@ -739,12 +739,13 @@ final class AgentComposerUITextView: UITextView {
     @objc private func keyboardFrameDidSettle(_ notification: Notification) {
         guard isFirstResponder, let window, window.isKeyWindow,
               let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
-                as? CGRect
+                as? CGRect,
+              let guideFrame = TerminalKeyboardInset.keyboardLayoutGuideFrame(in: window)
         else { return }
         let frameInWindow = window.convert(endFrame, from: window.screen.coordinateSpace)
         guard TerminalKeyboardInset.keyboardFrame(
             frameInWindow,
-            matches: window.keyboardLayoutGuide.layoutFrame,
+            matches: guideFrame,
             in: window)
         else { return }
         guard let activeKeyboardHandoffID else { return }
