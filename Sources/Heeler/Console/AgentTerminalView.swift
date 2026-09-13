@@ -1273,7 +1273,8 @@ struct AgentTerminalView: View {
         if composerToDirectHandoffID == id {
             composerToDirectHandoffID = nil
         }
-        keyboardInset.endResponderHandoff(id)
+        keyboardInset.endResponderHandoff(
+            id, currentHeight: currentWindowKeyboardHeight)
     }
 
     private func restoreComposerThen(_ action: @escaping () -> Void) {

@@ -1587,23 +1587,14 @@ struct TerminalAttachTests {
         let inset = TerminalKeyboardInset(notificationCenter: center) { frame in
             frame.height == 403 ? 383 : 48.5
         }
-        inset.dismissalConfirmationDelay = .milliseconds(80)
-        func systemInset() -> CGFloat {
-            AgentComposerKeyboardLayout(
-                currentHeight: inset.height,
-                lastPresentedHeight: inset.lastPresentedHeight,
-                presentation: .system,
-                softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed
-            ).contentInset
-        }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        let fullFrame = CGRect(x: 0, y: 973, width: 1032, height: 403)
 
         center.post(
             name: UIResponder.keyboardWillShowNotification, object: nil,
-            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
-                x: 0, y: 973, width: 1032, height: 403)])
-        try await Task.sleep(for: .milliseconds(120))
-        #expect(inset.height == 383)
-        #expect(systemInset() == 383)
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: fullFrame])
+        try #require(await Self.eventually { inset.height == 383 })
+        #expect(Self.systemContentInset(inset) == 383)
 
         // The sequence captured on the iPad simulator when the hardware
         // keyboard reconnects: the assistant bar's frame, then will-hide.
@@ -1615,22 +1606,21 @@ struct TerminalAttachTests {
         #expect(inset.height == 0)
         #expect(inset.lastPresentedHeight == 383)
         // Unconfirmed: a transient will-hide still keeps the pin.
-        #expect(systemInset() == 383)
+        #expect(inset.isConfirmingDismissal)
+        #expect(Self.systemContentInset(inset) == 383)
 
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(inset.isSoftwareKeyboardDismissed)
-        #expect(systemInset() == 0)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(Self.systemContentInset(inset) == 0)
         #expect(inset.lastPresentedHeight == 383)
 
         center.post(
             name: UIResponder.keyboardWillShowNotification, object: nil,
-            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
-                x: 0, y: 973, width: 1032, height: 403)])
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: fullFrame])
         #expect(!inset.isSoftwareKeyboardDismissed)
-        #expect(systemInset() == 383)
-        try await Task.sleep(for: .milliseconds(120))
-        #expect(inset.height == 383)
-        #expect(systemInset() == 383)
+        #expect(!inset.isConfirmingDismissal)
+        #expect(Self.systemContentInset(inset) == 383)
+        try #require(await Self.eventually { inset.height == 383 })
+        #expect(Self.systemContentInset(inset) == 383)
     }
 
     /// Swapping input views (Tools→iOS) publishes a will-hide immediately
@@ -1640,21 +1630,24 @@ struct TerminalAttachTests {
     @Test func aWillHideAnsweredByAPresentationKeepsTheSystemPin() async throws {
         let center = NotificationCenter()
         let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
-        inset.dismissalConfirmationDelay = .milliseconds(80)
+        inset.dismissalConfirmationDelay = .milliseconds(30)
         let frame = CGRect(x: 0, y: 973, width: 1032, height: 403)
 
         center.post(
             name: UIResponder.keyboardWillShowNotification, object: nil,
             userInfo: [UIResponder.keyboardFrameEndUserInfoKey: frame])
-        try await Task.sleep(for: .milliseconds(120))
+        try #require(await Self.eventually { inset.height == 383 })
         center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        #expect(inset.isConfirmingDismissal)
         center.post(
             name: UIResponder.keyboardWillShowNotification, object: nil,
             userInfo: [UIResponder.keyboardFrameEndUserInfoKey: frame])
-        try await Task.sleep(for: .milliseconds(200))
 
+        // The presentation cancelled the only timer that could confirm.
+        #expect(!inset.isConfirmingDismissal)
+        try #require(await Self.eventually { inset.height == 383 })
         #expect(!inset.isSoftwareKeyboardDismissed)
-        #expect(inset.height == 383)
+        #expect(Self.systemContentInset(inset) == 383)
     }
 
     /// Composer Tools installs a zero-height input view, so UIKit really hides
@@ -1666,28 +1659,147 @@ struct TerminalAttachTests {
     @Test func expectingTheSoftwareKeyboardRestoresThePinUntilItFailsToPresent() async throws {
         let center = NotificationCenter()
         let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
-        inset.dismissalConfirmationDelay = .milliseconds(80)
+        inset.dismissalConfirmationDelay = .milliseconds(30)
 
         center.post(
             name: UIResponder.keyboardWillShowNotification, object: nil,
             userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
                 x: 0, y: 973, width: 1032, height: 403)])
-        try await Task.sleep(for: .milliseconds(120))
+        try #require(await Self.eventually { inset.height == 383 })
         center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(inset.isSoftwareKeyboardDismissed)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
 
         inset.expectSoftwareKeyboard()
         #expect(!inset.isSoftwareKeyboardDismissed)
-        #expect(AgentComposerKeyboardLayout(
+        #expect(Self.systemContentInset(inset) == 383)
+
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(Self.systemContentInset(inset) == 0)
+    }
+
+    /// Direct Input measured the keyboard, a hardware keyboard reconnects
+    /// (will-hide, terminal still first responder), and the user selects the
+    /// Composer before the dismissal is confirmed. The handoff freeze must
+    /// carry that dismissal and settle it when its fallback expires, even
+    /// though UIKit posts no second hide inside the handoff.
+    @MainActor
+    @Test func aHideBeforeAHandoffIsSettledByItsFallback() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        inset.responderHandoffFallbackDelay = .milliseconds(30)
+        try await Self.presentThenHide(inset, center: center)
+
+        var expiredID: UUID?
+        let handoffID = inset.beginResponderHandoff(currentHeight: { 0 }) {
+            expiredID = $0
+        }
+        #expect(!inset.isConfirmingDismissal)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        // Composer's `.system` pin still holds while the freeze is active.
+        #expect(Self.systemContentInset(inset) == 383)
+
+        try #require(await Self.eventually { expiredID == handoffID })
+        #expect(!inset.isHoldingHandoffHeight)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(inset.height == 0)
+        #expect(Self.systemContentInset(inset) == 0)
+    }
+
+    /// A confirmation that expires while a handoff is holding must not be
+    /// dropped: the cancel path settles it against the window measurement.
+    @MainActor
+    @Test func aConfirmationExpiringWhileHoldingIsSettledOnCancel() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        inset.responderHandoffFallbackDelay = .seconds(60)
+        try await Self.presentThenHide(inset, center: center)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+
+        let handoffID = inset.beginResponderHandoff()
+        // Composer takes focus inside the freeze and expects the keyboard;
+        // with a hardware keyboard nothing presents.
+        inset.expectSoftwareKeyboard()
+        #expect(inset.isConfirmingDismissal)
+        try #require(await Self.eventually { !inset.isConfirmingDismissal })
+        #expect(inset.isHoldingHandoffHeight)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+
+        inset.cancelResponderHandoff(handoffID, currentHeight: { 0 })
+        #expect(!inset.isHoldingHandoffHeight)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(Self.systemContentInset(inset) == 0)
+    }
+
+    /// Ending a handoff (the destination's settle or its own timeout) with no
+    /// second hide still settles a carried dismissal: against the window's
+    /// zero height, or, without a window, against the frozen zero inset. A
+    /// keyboard measured up again restores the inset instead.
+    @MainActor
+    @Test(arguments: [CGFloat?.some(0), nil, 383])
+    func endingAHandoffWithoutASecondHideSettlesTheCarriedDismissal(
+        measured: CGFloat?
+    ) async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 383 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        inset.destinationResponderHandoffFallbackDelay = .seconds(60)
+        try await Self.presentThenHide(inset, center: center)
+
+        let handoffID = inset.beginDestinationOwnedResponderHandoff()
+        inset.endResponderHandoff(handoffID, currentHeight: { measured })
+        #expect(!inset.isHoldingHandoffHeight)
+
+        if measured == 383 {
+            #expect(inset.height == 383)
+            #expect(!inset.isConfirmingDismissal)
+            #expect(!inset.isSoftwareKeyboardDismissed)
+            #expect(Self.systemContentInset(inset) == 383)
+        } else {
+            #expect(inset.height == 0)
+            try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+            #expect(Self.systemContentInset(inset) == 0)
+        }
+    }
+
+    @MainActor
+    private static func presentThenHide(
+        _ inset: TerminalKeyboardInset, center: NotificationCenter
+    ) async throws {
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        try #require(await eventually { inset.height == 383 })
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        #expect(inset.height == 0)
+        #expect(inset.isConfirmingDismissal)
+    }
+
+    @MainActor
+    private static func systemContentInset(_ inset: TerminalKeyboardInset) -> CGFloat {
+        AgentComposerKeyboardLayout(
             currentHeight: inset.height,
             lastPresentedHeight: inset.lastPresentedHeight,
             presentation: .system,
             softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed
-        ).contentInset == 383)
+        ).contentInset
+    }
 
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(inset.isSoftwareKeyboardDismissed)
+    /// Polls instead of sleeping a fixed time, so a loaded runner cannot
+    /// outlast a hard-coded margin.
+    @MainActor
+    private static func eventually(
+        timeout: Duration = .seconds(5),
+        _ condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
     }
 
     /// Removing the Chinese candidate row publishes a shorter positive frame

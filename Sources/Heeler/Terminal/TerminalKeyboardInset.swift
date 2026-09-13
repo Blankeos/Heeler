@@ -37,6 +37,8 @@ final class TerminalKeyboardInset {
     private(set) var isSoftwareKeyboardDismissed = false
     @ObservationIgnored var dismissalConfirmationDelay = Duration.milliseconds(350)
     @ObservationIgnored private var dismissalConfirmationTask: Task<Void, Never>?
+    /// Whether a will-hide is still waiting on ``dismissalConfirmationDelay``.
+    var isConfirmingDismissal: Bool { dismissalConfirmationTask != nil }
     /// Long enough to fold a presentation's follow-up frame into the first,
     /// short enough to stay inside the keyboard's own animation.
     private static let coalesceDelay = Duration.milliseconds(60)
@@ -54,7 +56,12 @@ final class TerminalKeyboardInset {
     /// terminal confirms that its own keyboard frame settled.
     private(set) var activeResponderHandoffID: UUID?
     @ObservationIgnored private var responderHandoffFallbackTask: Task<Void, Never>?
-    @ObservationIgnored private var sawDismissDuringResponderHandoff = false
+    /// A dismissal the handoff has to settle on exit: a hide inside the
+    /// freeze, or one still unconfirmed when the freeze began or expiring
+    /// during it. Every exit reconciles it against the owning window, so a
+    /// hardware keyboard attached just before a mode switch cannot leave the
+    /// inset pinned with nothing left to confirm it.
+    @ObservationIgnored private var owesDismissalAfterResponderHandoff = false
     @ObservationIgnored var responderHandoffFallbackDelay = Duration.milliseconds(500)
     /// The destination terminal owns the primary 500ms timeout. This later
     /// owner-side watchdog exists only for a destination that is deallocated
@@ -127,7 +134,7 @@ final class TerminalKeyboardInset {
 
     private func keyboardWillDismiss() {
         guard !isHoldingHandoffHeight else {
-            sawDismissDuringResponderHandoff = true
+            owesDismissalAfterResponderHandoff = true
             return
         }
         coalesceTask?.cancel()
@@ -153,9 +160,12 @@ final class TerminalKeyboardInset {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
             self.dismissalConfirmationTask = nil
-            // A handoff freezes the inset; its fallback and cancel paths
-            // re-arm this when they commit a dismissal.
-            guard !self.isHoldingHandoffHeight, self.height == 0 else { return }
+            guard self.height == 0 else { return }
+            // A handoff freezes the inset; its exit settles the dismissal.
+            guard !self.isHoldingHandoffHeight else {
+                self.owesDismissalAfterResponderHandoff = true
+                return
+            }
             self.isSoftwareKeyboardDismissed = true
         }
     }
@@ -190,10 +200,10 @@ final class TerminalKeyboardInset {
             guard let self, self.activeResponderHandoffID == id else { return }
             self.responderHandoffFallbackTask = nil
             self.activeResponderHandoffID = nil
-            let shouldApplyDismissal = self.sawDismissDuringResponderHandoff
-            self.sawDismissDuringResponderHandoff = false
-            if shouldApplyDismissal {
-                self.applyDismissal(currentHeight: currentHeight() ?? 0)
+            let owesDismissal = self.owesDismissalAfterResponderHandoff
+            self.owesDismissalAfterResponderHandoff = false
+            if owesDismissal {
+                self.settleDismissal(measuredHeight: currentHeight() ?? 0)
             }
             onFallback(id)
         }
@@ -215,10 +225,10 @@ final class TerminalKeyboardInset {
             guard let self, self.activeResponderHandoffID == id else { return }
             self.responderHandoffFallbackTask = nil
             self.activeResponderHandoffID = nil
-            let shouldApplyDismissal = self.sawDismissDuringResponderHandoff
-            self.sawDismissDuringResponderHandoff = false
-            if shouldApplyDismissal, let height = currentHeight() {
-                self.applyDismissal(currentHeight: height)
+            let owesDismissal = self.owesDismissalAfterResponderHandoff
+            self.owesDismissalAfterResponderHandoff = false
+            if owesDismissal {
+                self.settleDismissal(measuredHeight: currentHeight())
             }
             onFallback(id)
         }
@@ -230,20 +240,41 @@ final class TerminalKeyboardInset {
         coalesceTask?.cancel()
         coalesceTask = nil
         responderHandoffFallbackTask?.cancel()
+        // An unconfirmed hide from before the freeze, or one a replaced
+        // freeze still owed, is carried into it rather than dropped.
+        owesDismissalAfterResponderHandoff =
+            (isHoldingHandoffHeight && owesDismissalAfterResponderHandoff)
+            || isConfirmingDismissal
         activeResponderHandoffID = id
-        sawDismissDuringResponderHandoff = false
+        dismissalConfirmationTask?.cancel()
+        dismissalConfirmationTask = nil
         return id
     }
 
     /// Releases a responder-handoff freeze after the destination terminal's
-    /// own keyboard frame settles. The pre-handoff settled height stays
-    /// authoritative; a later ordinary keyboard event can replace it.
-    func endResponderHandoff(_ id: UUID) {
+    /// own keyboard frame settles (or its own timeout gives up). The
+    /// pre-handoff settled height stays authoritative while the keyboard is
+    /// still measured up; a later ordinary keyboard event can replace it. An
+    /// owed dismissal is settled against `currentHeight` otherwise.
+    func endResponderHandoff(
+        _ id: UUID,
+        currentHeight: @escaping @MainActor () -> CGFloat? = { nil }
+    ) {
         guard activeResponderHandoffID == id else { return }
+        let owesDismissal = releaseResponderHandoff()
+        guard owesDismissal else { return }
+        let measuredHeight = currentHeight()
+        if let measuredHeight, measuredHeight > 0, height > 0 { return }
+        settleDismissal(measuredHeight: measuredHeight)
+    }
+
+    private func releaseResponderHandoff() -> Bool {
         responderHandoffFallbackTask?.cancel()
         responderHandoffFallbackTask = nil
         activeResponderHandoffID = nil
-        sawDismissDuringResponderHandoff = false
+        let owesDismissal = owesDismissalAfterResponderHandoff
+        owesDismissalAfterResponderHandoff = false
+        return owesDismissal
     }
 
     /// Cancels a transfer without committing any frame emitted while neither
@@ -253,16 +284,22 @@ final class TerminalKeyboardInset {
         currentHeight: @escaping @MainActor () -> CGFloat? = { nil }
     ) {
         guard activeResponderHandoffID == id else { return }
-        let shouldApplyDismissal = sawDismissDuringResponderHandoff
-        endResponderHandoff(id)
-        if shouldApplyDismissal, let height = currentHeight() {
-            applyDismissal(currentHeight: height)
-        }
+        guard releaseResponderHandoff() else { return }
+        settleDismissal(measuredHeight: currentHeight())
     }
 
-    private func applyDismissal(currentHeight: CGFloat) {
-        apply(max(0, currentHeight))
-        if height == 0 {
+    /// Commits an owed dismissal. A measurement is authoritative; without
+    /// one (no owning window) the frozen height stands, and a zero height
+    /// still gets its confirmation.
+    private func settleDismissal(measuredHeight: CGFloat?) {
+        if let measuredHeight {
+            apply(max(0, measuredHeight))
+        }
+        if height > 0 {
+            dismissalConfirmationTask?.cancel()
+            dismissalConfirmationTask = nil
+            isSoftwareKeyboardDismissed = false
+        } else {
             confirmDismissalIfUnanswered()
         }
     }

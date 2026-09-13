@@ -99,6 +99,71 @@ struct TerminalKeysKeyboardTests {
                 mode: .controls, insetHeight: 0, keyboardIsUp: true) == .tools)
     }
 
+    /// A hardware keyboard attaching hides the system keyboard while the
+    /// shell terminal keeps first responder, so Text stays `.system`. Its
+    /// inset must follow the confirmed dismissal to zero instead of keeping a
+    /// keyboard-sized band.
+    @Test func aConfirmedHardwareKeyboardDismissalReleasesTheShellTextPin() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 336 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+        let text = ShellTerminalView.keyboardPresentation(
+            mode: .text, insetHeight: 0, keyboardIsUp: true)
+        #expect(text == .system)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 500, width: 402, height: 370)])
+        try #require(await Self.eventually { inset.height == 336 })
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: text).contentInset == 336)
+
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: text).contentInset == 0)
+    }
+
+    /// Keys suppresses the system keyboard, so its will-hide is a real
+    /// dismissal and gets confirmed while the dock is up. Switching back to
+    /// Text must restore the pre-show pin before UIKit's frame arrives, or
+    /// the terminal drops to the bottom and rides back up with the keyboard.
+    @Test func keysToTextKeepsThePreShowPinAfterAConfirmedDismissal() async throws {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(notificationCenter: center) { _ in 336 }
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 500, width: 402, height: 370)])
+        try #require(await Self.eventually { inset.height == 336 })
+
+        ShellTerminalView.prepareKeyboardMode(.controls, inset: inset)
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        try #require(await Self.eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: .tools).contentInset == 336)
+
+        ShellTerminalView.prepareKeyboardMode(.text, inset: inset)
+        let text = ShellTerminalView.keyboardPresentation(
+            mode: .text, insetHeight: inset.height, keyboardIsUp: true)
+        #expect(text == .system)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: text).contentInset == 336)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 500, width: 402, height: 370)])
+        #expect(!inset.isConfirmingDismissal)
+        try #require(await Self.eventually { inset.height == 336 })
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: text).contentInset == 336)
+    }
+
     @Test func everyTabHasItsOwnIconAndLabel() {
         let icons = Set(TerminalKeysTab.allCases.map(\.systemImageName))
         let labels = Set(TerminalKeysTab.allCases.map(\.accessibilityLabel))
@@ -110,4 +175,17 @@ struct TerminalKeysKeyboardTests {
         }
     }
 
+    /// Polls instead of sleeping a fixed time, so a loaded runner cannot
+    /// outlast a hard-coded margin.
+    private static func eventually(
+        timeout: Duration = .seconds(5),
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
 }

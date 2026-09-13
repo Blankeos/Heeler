@@ -78,10 +78,41 @@ struct ShellTerminalView: View {
     }
 
     private var keyboardLayout: AgentComposerKeyboardLayout {
+        Self.keyboardLayout(
+            inset: keyboardInset, presentation: keyboardPresentation)
+    }
+
+    /// A hardware keyboard attaching hides the system keyboard while the
+    /// terminal keeps first responder, so Text stays `.system`; the
+    /// confirmed dismissal is what releases its pin to the last footprint.
+    static func keyboardLayout(
+        inset: TerminalKeyboardInset,
+        presentation: AgentComposerKeyboardPresentation
+    ) -> AgentComposerKeyboardLayout {
         AgentComposerKeyboardLayout(
-            currentHeight: keyboardInset.height,
-            lastPresentedHeight: keyboardInset.lastPresentedHeight,
-            presentation: keyboardPresentation)
+            currentHeight: inset.height,
+            lastPresentedHeight: inset.lastPresentedHeight,
+            presentation: presentation,
+            softwareKeyboardDismissed: inset.isSoftwareKeyboardDismissed)
+    }
+
+    /// Keys suppresses the system keyboard, so UIKit really hides it and the
+    /// dismissal is confirmed while the dock is up. Returning to Text
+    /// expects the keyboard again, keeping the pre-show pin until its frame
+    /// arrives.
+    static func prepareKeyboardMode(
+        _ mode: TerminalKeyboardMode, inset: TerminalKeyboardInset
+    ) {
+        switch mode {
+        case .controls:
+            // Candidate bars publish transition-only frames while UIKit
+            // removes the system keyboard; the dock keeps the last complete
+            // measurement instead.
+            inset.pauseHeightCapture()
+        case .text:
+            inset.resumeHeightCapture()
+            inset.expectSoftwareKeyboard()
+        }
     }
 
     private var isKeysDockPresented: Bool {
@@ -211,15 +242,7 @@ struct ShellTerminalView: View {
 
     private func setKeyboardMode(_ mode: TerminalKeyboardMode) {
         guard mode != keyboardMode else { return }
-        switch mode {
-        case .controls:
-            // Candidate bars publish transition-only frames while UIKit
-            // removes the system keyboard; the dock keeps the last complete
-            // measurement instead.
-            keyboardInset.pauseHeightCapture()
-        case .text:
-            keyboardInset.resumeHeightCapture()
-        }
+        Self.prepareKeyboardMode(mode, inset: keyboardInset)
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
