@@ -59,8 +59,8 @@ enum InputChromeLayout {
     static let pasteVisualWidth: CGFloat = 30
     static let pinnedFadeWidth: CGFloat = 8
 
-    /// Caps Terminal / Agent / Skills keyboard wells and centers them when
-    /// the window is wider. A single row must not span a 1000 pt iPad.
+    /// Caps Agent and Skills keyboard wells and centers them in wider windows.
+    /// The full Terminal keyboard adapts to the entire dock width separately.
     static let maxKeyboardContentWidth: CGFloat = 768
 
     /// Context-menu skill preview has no parent width. This is the card cap

@@ -1,6 +1,35 @@
 import SwiftUI
 import UIKit
 
+/// A ten-column pitch keeps character keys consistent across staggered rows.
+/// Width changes only horizontal geometry; the dock owns all vertical sizing.
+struct TerminalFullKeyboardLayout {
+    let contentWidth: CGFloat
+    let horizontalInset: CGFloat
+    let keySpacing: CGFloat
+    let rowHeight: CGFloat
+
+    static let rowSpacing: CGFloat = 4
+
+    init(size: CGSize) {
+        let expansion = min(1, max(0, (size.width - 600) / 400))
+        horizontalInset = 6 + 6 * expansion
+        keySpacing = 4 + 2 * expansion
+        contentWidth = max(0, size.width - horizontalInset * 2)
+        rowHeight = max(0, (size.height - 12 - 5 * Self.rowSpacing) / 6)
+    }
+
+    var characterWidth: CGFloat { max(0, (contentWidth - 9 * keySpacing) / 10) }
+    var homeRowInset: CGFloat { (characterWidth + keySpacing) / 2 }
+    var bottomKeyWidth: CGFloat { characterWidth * 0.875 }
+    var spaceWidth: CGFloat { max(0, contentWidth - 9 * (bottomKeyWidth + keySpacing)) }
+
+    func sideKeyWidth(characterCount: Int) -> CGFloat {
+        max(0, (contentWidth - CGFloat(characterCount) * characterWidth
+            - CGFloat(characterCount + 1) * keySpacing) / 2)
+    }
+}
+
 /// The shared full keyboard used by Agent tools and Open Terminal's Keys dock.
 /// Its six rows always fit the height supplied by the measured keyboard dock.
 struct TerminalFullKeyboard: View {
@@ -16,66 +45,74 @@ struct TerminalFullKeyboard: View {
         GeometryReader { geometry in
             // Six rows share exactly the available page height, including in
             // landscape. No intrinsic key size may grow the surrounding dock.
-            // Width is capped and centered so a 13-inch iPad does not stretch
-            // one row across 1000 pt; see `InputChromeLayout.maxKeyboardContentWidth`.
-            let contentWidth = min(geometry.size.width, InputChromeLayout.maxKeyboardContentWidth)
-            let rowHeight = max(0, (geometry.size.height - 12 - 5 * 4) / 6)
-            VStack(spacing: 4) {
-                utilityRow
-                    .frame(height: rowHeight)
-                numberRow
-                    .frame(height: rowHeight)
-                characterRow(showsSymbols ? "-/\\:;()$&@" : "qwertyuiop")
-                    .frame(height: rowHeight)
-                characterRow(showsSymbols ? "[]=+#%^*{}" : "asdfghjkl")
-                    .padding(.horizontal, showsSymbols ? 0 : contentWidth * 0.035)
-                    .frame(height: rowHeight)
-                HStack(spacing: 4) {
+            let layout = TerminalFullKeyboardLayout(size: geometry.size)
+            VStack(spacing: TerminalFullKeyboardLayout.rowSpacing) {
+                utilityRow(spacing: layout.keySpacing)
+                    .frame(height: layout.rowHeight)
+                numberRow(layout: layout)
+                    .frame(height: layout.rowHeight)
+                characterRow(showsSymbols ? "-/\\:;()$&@" : "qwertyuiop", layout: layout)
+                    .frame(height: layout.rowHeight)
+                characterRow(showsSymbols ? "[]=+#%^*{}" : "asdfghjkl", layout: layout)
+                    .padding(.horizontal, showsSymbols ? 0 : layout.homeRowInset)
+                    .frame(height: layout.rowHeight)
+                HStack(spacing: layout.keySpacing) {
                     modifierKey(.shift, title: "Shift", image: "shift", label: "Shift modifier")
+                        .frame(width: layout.sideKeyWidth(characterCount: showsSymbols ? 6 : 7))
                     ForEach(Array(showsSymbols ? ".,?!'`" : "zxcvbnm"), id: \.self) { character in
                         characterKey(character)
+                            .frame(width: layout.characterWidth)
                     }
                     TerminalBackspaceButton(usesSymbol: true) {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         send(.backspace)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: layout.sideKeyWidth(characterCount: showsSymbols ? 6 : 7))
+                    .frame(maxHeight: .infinity)
                     .disabled(!isEnabled)
                     .opacity(isEnabled ? 1 : 0.45)
                 }
-                .frame(height: rowHeight)
-                HStack(spacing: 4) {
+                .frame(height: layout.rowHeight)
+                HStack(spacing: layout.keySpacing) {
                     modifierKey(.control, title: "Ctrl", label: "Control modifier")
+                        .frame(width: layout.bottomKeyWidth)
                     modifierKey(.option, title: "Alt", label: "Option modifier")
+                        .frame(width: layout.bottomKeyWidth)
                     TerminalKeyboardKeyCap(
                         title: "Fn", label: "Function key layer", isEnabled: isEnabled,
                         isSelected: showsFunctionKeys
                     ) { showsFunctionKeys.toggle() }
+                    .frame(width: layout.bottomKeyWidth)
                     TerminalKeyboardKeyCap(
                         title: showsSymbols ? "ABC" : "#+=", label: "Symbol key layer",
                         isEnabled: isEnabled, isSelected: showsSymbols
                     ) { showsSymbols.toggle() }
+                    .frame(width: layout.bottomKeyWidth)
                     characterKey(" ", title: "Space")
-                        .frame(width: max(0, contentWidth - 12) * 0.14)
+                        .frame(width: layout.spaceWidth)
                     key(.left)
+                        .frame(width: layout.bottomKeyWidth)
                     key(.down)
+                        .frame(width: layout.bottomKeyWidth)
                     key(.up)
+                        .frame(width: layout.bottomKeyWidth)
                     key(.right)
+                        .frame(width: layout.bottomKeyWidth)
                     key(.enter, image: "return")
+                        .frame(width: layout.bottomKeyWidth)
                 }
-                .frame(height: rowHeight)
+                .frame(height: layout.rowHeight)
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, layout.horizontalInset)
             .padding(.top, 4)
             .padding(.bottom, 8)
-            .frame(width: contentWidth, height: geometry.size.height)
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
     }
 
-    private var utilityRow: some View {
-        HStack(spacing: 4) {
+    private func utilityRow(spacing: CGFloat) -> some View {
+        HStack(spacing: spacing) {
             key(.escape)
             if showsFunctionKeys {
                 ForEach(Array(TerminalFunctionKey.allCases.prefix(6)), id: \.self) { function in
@@ -97,23 +134,24 @@ struct TerminalFullKeyboard: View {
     }
 
     @ViewBuilder
-    private var numberRow: some View {
+    private func numberRow(layout: TerminalFullKeyboardLayout) -> some View {
         if showsFunctionKeys {
-            HStack(spacing: 4) {
+            HStack(spacing: layout.keySpacing) {
                 key(.tab)
                 ForEach(Array(TerminalFunctionKey.allCases.suffix(6)), id: \.self) { function in
                     key(.function(function))
                 }
             }
         } else {
-            characterRow("1234567890")
+            characterRow("1234567890", layout: layout)
         }
     }
 
-    private func characterRow(_ characters: String) -> some View {
-        HStack(spacing: 4) {
+    private func characterRow(_ characters: String, layout: TerminalFullKeyboardLayout) -> some View {
+        HStack(spacing: layout.keySpacing) {
             ForEach(Array(characters), id: \.self) { character in
                 characterKey(character)
+                    .frame(width: layout.characterWidth)
             }
         }
     }

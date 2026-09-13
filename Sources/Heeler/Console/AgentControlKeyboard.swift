@@ -18,8 +18,8 @@ struct AgentControlKeyboard: View {
 
     var body: some View {
         GeometryReader { geometry in
-            // Cap and center the pager so a 13-inch iPad does not stretch
-            // the 3×3 Agent pad or the Terminal page across 1000 pt.
+            // Keep the Agent pad and page selector compact while the Terminal
+            // page uses the full dock width, including during a page swipe.
             let contentWidth = min(geometry.size.width, InputChromeLayout.maxKeyboardContentWidth)
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
@@ -33,10 +33,12 @@ struct AgentControlKeyboard: View {
                     pageButton(.terminal, title: "Terminal", label: "Terminal keyboard page")
                 }
                 .frame(height: 26)
+                .frame(maxWidth: contentWidth)
 
                 GeometryReader { viewport in
                     HStack(spacing: 0) {
                         AgentQuickKeyPad(isEnabled: isEnabled, send: send)
+                            .frame(width: contentWidth)
                             .frame(width: viewport.size.width, height: viewport.size.height)
                             .accessibilityElement(children: .contain)
                             .accessibilityHidden(page != .agent)
@@ -73,7 +75,6 @@ struct AgentControlKeyboard: View {
                             })
                 }
             }
-            .frame(width: contentWidth, height: geometry.size.height)
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }

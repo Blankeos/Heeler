@@ -35,8 +35,10 @@ Entries reference the issue that motivated them.
 
 - Direct Input's More button matches the arrow key size and shortcut spacing,
   with equal padding at the strip's outer edges.
-- The custom Terminal, Agent, and Skills keyboards fill iPad width instead
-  of an iPhone-sized well.
+- The Terminal keyboard fills its dock width on iPhone and iPad without
+  increasing its height. Character keys share one width across staggered
+  rows, with wider Shift, Backspace, and Space keys. Agent and Skills
+  keyboard wells remain centered on wide screens.
 - On iPad the Composer's tools dock, Direct Input's Keys dock, and the
   Shell terminal's Keys dock no longer leave the system keyboard's floating
   candidate and prediction bar over the dock.
