@@ -1818,6 +1818,134 @@ struct TerminalAttachTests {
         #expect(Self.systemContentInset(inset) == 383)
     }
 
+    /// A hardware keyboard detaching while the Composer keeps focus: the
+    /// software keyboard presents with no handoff and no new expectation,
+    /// after the focus-time hide was already confirmed. The presentation
+    /// must clear the confirmed dismissal and apply its height.
+    @MainActor
+    @Test func aPresentationAfterAConfirmedHardwareKeyboardDismissalAppliesItsHeight()
+        async throws
+    {
+        let center = NotificationCenter()
+        let inset = TerminalKeyboardInset(
+            notificationCenter: center, measure: Self.iPadProPortraitCoverage)
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+
+        try await Self.focusWithHardwareKeyboard(inset, center: center)
+
+        let softwareKeyboard = CGRect(x: 0, y: 973, width: 1032, height: 403)
+        center.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: softwareKeyboard])
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: softwareKeyboard])
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(!inset.isConfirmingDismissal)
+        try #require(await Self.eventually { inset.height == 383 })
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(Self.systemContentInset(inset) == 383)
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: .system).contentInset == 383)
+    }
+
+    /// The order the iPad simulator's own log recorded for the regression:
+    /// after the focus-time hide was confirmed, detaching the hardware
+    /// keyboard posted `willShow` with the keyboard's size but an origin at
+    /// the screen's bottom edge, while the keyboard layout guide already
+    /// covered 403 pt. That frame measures zero and is dropped; the did-show
+    /// has to settle against the window, or the Composer (and a Shell
+    /// Terminal) stays under a visible keyboard.
+    @MainActor
+    @Test func aPresentationPublishedBelowTheScreenSettlesAgainstTheWindowOnDidShow()
+        async throws
+    {
+        let center = NotificationCenter()
+        var windowKeyboardHeight: CGFloat? = 0
+        let inset = TerminalKeyboardInset(
+            notificationCenter: center,
+            measure: Self.iPadProPortraitCoverage,
+            measureWindowKeyboard: { windowKeyboardHeight })
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+
+        try await Self.focusWithHardwareKeyboard(inset, center: center)
+
+        windowKeyboardHeight = 383
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 1376, width: 1032, height: 403)])
+        #expect(inset.height == 0)
+        #expect(inset.isSoftwareKeyboardDismissed)
+
+        center.post(name: UIResponder.keyboardDidShowNotification, object: nil)
+        #expect(inset.height == 383)
+        #expect(inset.lastPresentedHeight == 383)
+        #expect(!inset.isSoftwareKeyboardDismissed)
+        #expect(!inset.isConfirmingDismissal)
+        #expect(Self.systemContentInset(inset) == 383)
+        #expect(ShellTerminalView.keyboardLayout(
+            inset: inset, presentation: .system).contentInset == 383)
+    }
+
+    /// The did-show reconciliation is only for a dropped presentation. A
+    /// measured frame stays authoritative over the layout guide, and a
+    /// below-screen frame answered by a will-hide is a dismissal.
+    @MainActor
+    @Test func aDidShowLeavesMeasuredPresentationsAndDismissalsAlone() async throws {
+        let center = NotificationCenter()
+        var windowKeyboardHeight: CGFloat? = 300
+        let inset = TerminalKeyboardInset(
+            notificationCenter: center,
+            measure: Self.iPadProPortraitCoverage,
+            measureWindowKeyboard: { windowKeyboardHeight })
+        inset.dismissalConfirmationDelay = .milliseconds(30)
+
+        center.post(
+            name: UIResponder.keyboardWillShowNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 973, width: 1032, height: 403)])
+        try #require(await Self.eventually { inset.height == 383 })
+        center.post(name: UIResponder.keyboardDidShowNotification, object: nil)
+        #expect(inset.height == 383)
+
+        windowKeyboardHeight = 383
+        center.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 1376, width: 1032, height: 403)])
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        center.post(name: UIResponder.keyboardDidShowNotification, object: nil)
+        #expect(inset.height == 0)
+        #expect(inset.isConfirmingDismissal)
+    }
+
+    /// Focusing the Composer with a hardware keyboard attached, as the iPad
+    /// simulator publishes it: a zero-height frame at the bottom edge, then
+    /// will-hide, confirmed.
+    @MainActor
+    private static func focusWithHardwareKeyboard(
+        _ inset: TerminalKeyboardInset, center: NotificationCenter
+    ) async throws {
+        center.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: CGRect(
+                x: 0, y: 1376, width: 1032, height: 0)])
+        center.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        #expect(inset.height == 0)
+        try #require(await eventually { inset.isSoftwareKeyboardDismissed })
+        #expect(systemContentInset(inset) == 0)
+    }
+
+    /// `coveredHeight(of:in:)` for a full-screen portrait iPad Pro 13-inch
+    /// window: 1032 x 1376 pt with a 20 pt bottom safe area.
+    @MainActor
+    private static func iPadProPortraitCoverage(_ frame: CGRect) -> CGFloat? {
+        let window = CGRect(x: 0, y: 0, width: 1032, height: 1376)
+        return TerminalKeyboardInset.insetHeight(
+            covered: window.intersection(frame).height, bottomSafeArea: 20)
+    }
+
     @MainActor
     private static func presentThenHide(
         _ inset: TerminalKeyboardInset, center: NotificationCenter

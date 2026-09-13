@@ -45,6 +45,11 @@ final class TerminalKeyboardInset {
     @ObservationIgnored private var coalesceTask: Task<Void, Never>?
     /// Nil in production, where the keyboard is measured against `window`.
     @ObservationIgnored private let measureOverride: (@MainActor (CGRect) -> CGFloat?)?
+    /// Nil in production, where `window`'s keyboard layout guide is read.
+    @ObservationIgnored private let measureWindowKeyboardOverride: (@MainActor () -> CGFloat?)?
+    /// A presentation published a keyboard-sized end frame that covered none
+    /// of the window, so it was dropped; see `keyboardDidShow()`.
+    @ObservationIgnored private var missedPresentationFrame = false
     /// The window this inset's terminal lives in. Keyboard notifications are
     /// process-wide; with two windows on iPad only the terminal's own window
     /// can say how much of it the keyboard covers.
@@ -70,13 +75,16 @@ final class TerminalKeyboardInset {
 
     var isHoldingHandoffHeight: Bool { activeResponderHandoffID != nil }
 
-    /// `measure` replaces the window measurement in tests; production leaves
-    /// it nil and attaches the terminal's window instead.
+    /// `measure` and `measureWindowKeyboard` replace the window measurements
+    /// in tests; production leaves them nil and attaches the terminal's
+    /// window instead.
     init(
         notificationCenter: NotificationCenter = .default,
-        measure: (@MainActor (CGRect) -> CGFloat?)? = nil
+        measure: (@MainActor (CGRect) -> CGFloat?)? = nil,
+        measureWindowKeyboard: (@MainActor () -> CGFloat?)? = nil
     ) {
         measureOverride = measure
+        measureWindowKeyboardOverride = measureWindowKeyboard
         for name: Notification.Name in [
             UIResponder.keyboardWillShowNotification,
             UIResponder.keyboardWillChangeFrameNotification,
@@ -99,6 +107,13 @@ final class TerminalKeyboardInset {
                 self?.keyboardWillDismiss()
             }
         }
+        notificationCenter.addObserver(
+            forName: UIResponder.keyboardDidShowNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.keyboardDidShow()
+            }
+        }
     }
 
     /// Measures against the window the terminal is mounted in, which its view
@@ -117,10 +132,23 @@ final class TerminalKeyboardInset {
         return Self.coveredHeight(of: endFrame, in: window)
     }
 
+    private func measureWindowKeyboard() -> CGFloat? {
+        if let measureWindowKeyboardOverride {
+            return measureWindowKeyboardOverride()
+        }
+        guard let window else { return nil }
+        return Self.layoutGuideHeight(in: window)
+    }
+
     private func keyboardWillPresent(endFrame: CGRect?) {
         guard !isHoldingHandoffHeight else { return }
         guard capturesPresentedHeight else { return }
-        guard let endFrame, let height = measure(endFrame), height > 0 else { return }
+        guard let endFrame, let height = measure(endFrame) else { return }
+        guard height > 0 else {
+            missedPresentationFrame = endFrame.height > 0
+            return
+        }
+        missedPresentationFrame = false
         dismissalConfirmationTask?.cancel()
         dismissalConfirmationTask = nil
         isSoftwareKeyboardDismissed = false
@@ -133,6 +161,7 @@ final class TerminalKeyboardInset {
     }
 
     private func keyboardWillDismiss() {
+        missedPresentationFrame = false
         guard !isHoldingHandoffHeight else {
             owesDismissalAfterResponderHandoff = true
             return
@@ -141,6 +170,25 @@ final class TerminalKeyboardInset {
         coalesceTask = nil
         apply(0)
         confirmDismissalIfUnanswered()
+    }
+
+    /// UIKit can publish a presentation whose end frame has the keyboard's
+    /// size but lies wholly below the screen. Observed on the iPad simulator
+    /// after windowed multitasking: detaching the hardware keyboard posted
+    /// `willShow` with `(0, 1376, 1032, 403)` while the keyboard sat at
+    /// `y = 973`, and no corrected frame followed. That frame covers none of
+    /// the window and is dropped above, which left the inset at zero, with a
+    /// confirmed dismissal, under a visible keyboard. The window's keyboard
+    /// layout guide still tracks the real keyboard, so the did-show settles
+    /// against it. Only a dropped presentation is reconciled: any measured
+    /// frame stays authoritative.
+    private func keyboardDidShow() {
+        guard missedPresentationFrame, !isHoldingHandoffHeight, capturesPresentedHeight
+        else { return }
+        missedPresentationFrame = false
+        guard let measuredHeight = measureWindowKeyboard(), measuredHeight > 0 else { return }
+        coalesceTask?.cancel()
+        settleDismissal(measuredHeight: measuredHeight)
     }
 
     /// The app is about to ask UIKit for the software keyboard (Tools→iOS,
@@ -357,6 +405,24 @@ final class TerminalKeyboardInset {
         return insetHeight(
             covered: window.bounds.intersection(frameInWindow).height,
             bottomSafeArea: window.safeAreaInsets.bottom)
+    }
+
+    /// How far the keyboard reaches above the terminal's bottom edge as
+    /// `window`'s keyboard layout guide tracks it, under the same ownership
+    /// rule as `coveredHeight(of:in:)`. The guide rests on the bottom safe
+    /// area while no keyboard is docked, which measures zero.
+    static func layoutGuideHeight(in window: UIWindow) -> CGFloat? {
+        guard let scene = window.windowScene,
+            windowOwnsKeyboard(
+                isKeyWindow: window.isKeyWindow,
+                isSceneKeyWindow: scene.keyWindow === window,
+                activationState: scene.activationState)
+        else { return nil }
+        let frame = window.bounds.intersection(window.keyboardLayoutGuide.layoutFrame)
+        let includesBottomSafeArea = abs(frame.maxY - window.bounds.maxY) <= 1
+        return insetHeight(
+            covered: frame.height,
+            bottomSafeArea: includesBottomSafeArea ? window.safeAreaInsets.bottom : 0)
     }
 
     /// Whether a keyboard notification can belong to this window. The key
