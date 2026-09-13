@@ -6,13 +6,11 @@ enum AgentComposerKeyboardPresentation: Equatable {
     case system
     case tools
 
-    /// iPad draws its keyboard toolbar (input switcher, dictation, emoji,
-    /// IME candidates) under any first responder whose software keyboard is
-    /// suppressed, so the tools dock there lets the Composer give up first
-    /// responder instead of hiding the keyboard in place. iPhone shows no
-    /// such bar and keeps the in-place switch, which preserves the IME
-    /// session across Tools and back.
-    @MainActor static let toolsDockReleasesFocus = UIDevice.current.userInterfaceIdiom == .pad
+    /// The tools dock follows the Keys dock's responder policy; see
+    /// `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+    @MainActor static var toolsDockReleasesFocus: Bool {
+        TerminalKeyboardMode.controlsReleaseFirstResponder
+    }
 }
 
 struct AgentComposerKeyboardLayout: Equatable {

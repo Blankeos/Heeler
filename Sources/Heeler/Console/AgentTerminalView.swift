@@ -393,6 +393,12 @@ struct AgentTerminalView: View {
             } else {
                 keyboardInset.resumeHeightCapture()
             }
+            // An iPad tools dock stands without a responder; the token is
+            // still consumed so it cannot raise a later surface.
+            if usesDirectToolsKeyboard, TerminalKeyboardMode.controlsReleaseFirstResponder {
+                _ = keyboardHandoff.consume(agent.id)
+                return false
+            }
             if keyboardHandoff.consume(agent.id) {
                 directKeyboardIntent.setWantsKeyboard(true)
                 return true
@@ -723,9 +729,16 @@ struct AgentTerminalView: View {
         }
         #endif
         .onChange(of: keyboardControl.isFirstResponder) { _, isUp in
+            guard isDirectInput else { return }
+            if isUp {
+                // On iPad the tools dock stands without a responder, so a tap
+                // on the terminal's input row asks for the system keyboard.
+                guard usesDirectToolsKeyboard, toolsDockReleasesFocus else { return }
+                showDirectSystemKeyboard()
+                return
+            }
             // Tools→iOS keeps first responder across the coalesce window; a
             // real dismiss resigns and must drop the pre-show `.system` hold.
-            guard isDirectInput, !isUp else { return }
             expectsDirectSystemKeyboard = false
         }
         .onChange(of: keyboardInset.height) { _, height in
@@ -1296,28 +1309,49 @@ struct AgentTerminalView: View {
         }
     }
 
+    /// See `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+    private var toolsDockReleasesFocus: Bool {
+        TerminalKeyboardMode.controlsReleaseFirstResponder
+    }
+
     private func switchDirectKeyboard() {
         guard isOnStage() else { return }
-        let enteringTools = !usesDirectToolsKeyboard
+        guard !usesDirectToolsKeyboard else {
+            showDirectSystemKeyboard()
+            return
+        }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            if enteringTools {
-                expectsDirectSystemKeyboard = false
-                keyboardInset.pauseHeightCapture()
-                usesDirectToolsKeyboard = true
-                keyboardControl.setKeyboardMode(.controls)
-            } else {
-                // Hold `.system` through UIKit's coalesce window so content
-                // inset stays at lastPresentedHeight instead of dipping to zero.
-                expectsDirectSystemKeyboard = true
-                keyboardInset.resumeHeightCapture()
-                usesDirectToolsKeyboard = false
-                keyboardControl.setKeyboardMode(.text)
-            }
+            expectsDirectSystemKeyboard = false
+            keyboardInset.pauseHeightCapture()
+            usesDirectToolsKeyboard = true
+            keyboardControl.setKeyboardMode(.controls)
         }
-        if enteringTools {
+        if toolsDockReleasesFocus {
+            directKeyboardIntent.setWantsKeyboard(false)
+            keyboardControl.dismissKeyboard()
+        } else {
             directKeyboardIntent.setWantsKeyboard(true)
+            keyboardControl.requestKeyboard()
+        }
+    }
+
+    /// Tools → iOS keyboard. Holds `.system` through UIKit's coalesce window
+    /// so content inset stays at lastPresentedHeight instead of dipping to
+    /// zero. On iPad the dock released first responder, so the keyboard is
+    /// requested again unless the tap that raised it already did.
+    private func showDirectSystemKeyboard() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            expectsDirectSystemKeyboard = true
+            keyboardInset.resumeHeightCapture()
+            usesDirectToolsKeyboard = false
+            keyboardControl.setKeyboardMode(.text)
+        }
+        directKeyboardIntent.setWantsKeyboard(true)
+        if toolsDockReleasesFocus, !keyboardControl.isFirstResponder {
             keyboardControl.requestKeyboard()
         }
     }

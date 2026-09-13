@@ -234,13 +234,25 @@ struct ShellTerminalView: View {
             // A recovered terminal is a fresh surface with no keyboard raised;
             // app-side mode state has to follow it back to Text.
             .onChange(of: store.terminalID) { _, _ in
+                setKeyboardMode(.text, restoresSystemKeyboard: false)
+            }
+            // On iPad the Keys dock stands without a responder, so a tap on
+            // the terminal's input row asks for the system keyboard.
+            .onChange(of: keyboardControl.isFirstResponder) { _, isUp in
+                guard isUp, keyboardMode == .controls,
+                      TerminalKeyboardMode.controlsReleaseFirstResponder
+                else { return }
                 setKeyboardMode(.text)
             }
             .onAppear { store.rejoin() }
             .onDisappear { store.leave() }
     }
 
-    private func setKeyboardMode(_ mode: TerminalKeyboardMode) {
+    /// `restoresSystemKeyboard` is false when Text follows a fresh surface
+    /// rather than the user leaving Keys: nothing was raised to bring back.
+    private func setKeyboardMode(
+        _ mode: TerminalKeyboardMode, restoresSystemKeyboard: Bool = true
+    ) {
         guard mode != keyboardMode else { return }
         Self.prepareKeyboardMode(mode, inset: keyboardInset)
         var transaction = Transaction()
@@ -249,6 +261,16 @@ struct ShellTerminalView: View {
             keyboardMode = mode
         }
         keyboardControl.setKeyboardMode(mode)
+        // See `TerminalKeyboardMode.controlsReleaseFirstResponder`.
+        guard TerminalKeyboardMode.controlsReleaseFirstResponder else { return }
+        switch mode {
+        case .controls:
+            keyboardControl.dismissKeyboard()
+        case .text:
+            if restoresSystemKeyboard, !keyboardControl.isFirstResponder {
+                keyboardControl.requestKeyboard()
+            }
+        }
     }
 
     private var themePalette: TerminalThemePalette {
