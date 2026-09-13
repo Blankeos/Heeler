@@ -13,8 +13,6 @@ struct AgentDirectInputChromeContext {
         /// Ghostty first-responder / tools intent for the switcher toggle glyph.
         let isKeyboardUp: Bool
         let isToolsKeyboardPresented: Bool
-        /// Armed Ctrl/Alt for the shortcut strip's one-shot modifiers.
-        let armedModifiers: TerminalKeyModifiers
     }
 
     struct Interactions {
@@ -26,8 +24,6 @@ struct AgentDirectInputChromeContext {
         let switchKeyboard: (() -> Void)?
         let sendQuickKey: (AgentQuickKey) -> Void
         let paste: (String) -> Void
-        let toggleModifier: (TerminalKeyModifiers) -> Void
-        let sendInterrupt: () -> Void
         let showComposer: () -> Void
         /// Routes More / Add actions that own the draft: restore Composer first.
         let restoreComposerThen: (@escaping () -> Void) -> Void
@@ -48,17 +44,8 @@ struct AgentDirectInputChrome: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.hardwareKeyboardMonitor) private var injectedHardwareKeyboard
 
-    private var hardwareKeyboard: HardwareKeyboardMonitor {
-        injectedHardwareKeyboard ?? .shared
-    }
-
-    private var strip: InputShortcutStripPresentation {
-        InputShortcutStripPresentation(
-            hardwareKeyboardAttached: hardwareKeyboard.isHardwareKeyboardAttached,
-            sizeClass: horizontalSizeClass == .regular ? .regular : .compact)
-    }
+    private let strip = InputShortcutStripPresentation()
 
     private var presentation: AgentDirectInputChromeContext.Presentation {
         context.presentation
@@ -108,13 +95,7 @@ struct AgentDirectInputChrome: View {
     }
 
     private var shortcutRow: some View {
-        Group {
-            if strip.usesHorizontalScroll {
-                scrollingShortcutRow
-            } else {
-                flexibleShortcutRow
-            }
-        }
+        scrollingShortcutRow
         .frame(height: InputChromeLayout.shortcutRowHeight)
         .background(alignment: .top) {
             Rectangle()
@@ -129,7 +110,7 @@ struct AgentDirectInputChrome: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(strip.leadingItems, id: \.self) { item in
-                        sizedStripItem(item, flexible: false)
+                        sizedStripItem(item)
                     }
                 }
                 .padding(.leading, 8)
@@ -138,7 +119,7 @@ struct AgentDirectInputChrome: View {
 
             HStack(spacing: 0) {
                 ForEach(strip.trailingItems, id: \.self) { item in
-                    sizedStripItem(item, flexible: false)
+                    sizedStripItem(item)
                 }
             }
             .padding(.leading, 4)
@@ -156,33 +137,10 @@ struct AgentDirectInputChrome: View {
         }
     }
 
-    private var flexibleShortcutRow: some View {
-        HStack(spacing: 4) {
-            if strip.hardwareKeyboardAttached {
-                Spacer(minLength: 0)
-            }
-            ForEach(strip.items, id: \.self) { item in
-                sizedStripItem(item, flexible: true)
-            }
-            if strip.hardwareKeyboardAttached {
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.horizontal, 8)
-    }
-
-    @ViewBuilder
-    private func sizedStripItem(_ item: InputShortcutStripItem, flexible: Bool) -> some View {
-        let compactWidth = InputChromeLayout.compactWidth(for: item)
+    private func sizedStripItem(_ item: InputShortcutStripItem) -> some View {
         stripItem(item)
             .frame(
-                minWidth: flexible ? compactWidth : nil,
-                maxWidth: flexible
-                    ? (strip.hardwareKeyboardAttached
-                        ? InputChromeLayout.maxFlexibleKeyWidth : .infinity)
-                    : compactWidth)
-            .frame(
-                width: flexible ? nil : compactWidth,
+                width: InputChromeLayout.compactWidth(for: item),
                 height: InputChromeLayout.shortcutRowHeight)
     }
 
@@ -193,14 +151,6 @@ struct AgentDirectInputChrome: View {
             shortcutKeyButton(key)
         case .paste:
             pasteKeyButton
-        case .controlModifier:
-            modifierButton(
-                .control, title: "Ctrl", label: "Control modifier")
-        case .optionModifier:
-            modifierButton(
-                .option, title: "Alt", label: "Option modifier")
-        case .interrupt:
-            interruptButton
         case .more:
             moreMenu
         }
@@ -225,48 +175,6 @@ struct AgentDirectInputChrome: View {
             .accessibilityLabel(key.accessibilityLabel)
             .accessibilityHint("Sends this key directly to the Agent")
         }
-    }
-
-    private func modifierButton(
-        _ modifier: TerminalKeyModifiers, title: String, label: String
-    ) -> some View {
-        Button {
-            UIDevice.current.playInputClick()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            interactions.toggleModifier(modifier)
-        } label: {
-            shortcutKeyCap {
-                Text(title)
-                    .font(.caption.weight(.medium))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(.rect)
-        .buttonStyle(
-            TerminalKeyboardButtonStyle(
-                isSelected: presentation.armedModifiers.contains(modifier)))
-        .accessibilityLabel(label)
-        .accessibilityValue(
-            presentation.armedModifiers.contains(modifier) ? "Armed" : "Not armed")
-        .accessibilityHint("Applies to the next remote key; tap again to cancel")
-    }
-
-    private var interruptButton: some View {
-        Button {
-            UIDevice.current.playInputClick()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            interactions.sendInterrupt()
-        } label: {
-            shortcutKeyCap {
-                Text("⌃C")
-                    .font(.caption.weight(.medium))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(.rect)
-        .buttonStyle(TerminalKeyboardButtonStyle())
-        .accessibilityLabel("Control C")
-        .accessibilityHint("Sends Ctrl-C to the Agent")
     }
 
     private func sendShortcutKey(_ key: AgentQuickKey) {

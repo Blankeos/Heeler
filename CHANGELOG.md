@@ -33,9 +33,8 @@ Entries reference the issue that motivated them.
 
 ### Changed
 
-- Direct Input's shortcut strip drops keys a hardware keyboard already
-  provides, and the custom Terminal, Agent, and Skills keyboards fill iPad
-  width instead of an iPhone-sized well.
+- The custom Terminal, Agent, and Skills keyboards fill iPad width instead
+  of an iPhone-sized well.
 - iPad adapts its two-column Console to landscape and portrait, with a Show Agents
   action in empty detail, form sheets for Hosts, Settings, New Agent, Skills,
   Rename, Snippets, and Worktree, plus Attach Links popovers.

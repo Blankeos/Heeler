@@ -1607,9 +1607,6 @@ struct AgentDirectInputTests {
             composer: composer,
             attachStore: attachStore,
             interactionProbe: interactionProbe)
-            .environment(
-                \.hardwareKeyboardMonitor,
-                HardwareKeyboardMonitor.stub(attached: false))
     }
 
     private static func makeAgent(status: AgentStatus) -> ConsoleAgent {

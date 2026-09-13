@@ -6,67 +6,36 @@ import Foundation
 enum InputShortcutStripItem: Hashable, Sendable {
     case key(AgentQuickKey)
     case paste
-    /// One-shot Control for the next strip key (terminal Ctrl, not the
-    /// hardware keyboard's Control-as-system-modifier).
-    case controlModifier
-    /// One-shot Option as terminal meta/Alt.
-    case optionModifier
-    /// Distinct Ctrl-C interrupt. Hardware Control+C is not the same as
-    /// sending that chord through Attach.
-    case interrupt
     case more
 }
 
-/// Ordered shortcut-strip contents derived from hardware-keyboard attachment
-/// and horizontal size class. The view must not recompute this inline.
+/// Ordered shortcut-strip contents. One layout on every device and with or
+/// without a hardware keyboard: the scrolling key row with Enter and More
+/// pinned at the trailing edge. The view must not recompute this inline.
 struct InputShortcutStripPresentation: Equatable, Sendable {
     enum SizeClass: Equatable, Sendable, CaseIterable {
         case compact
         case regular
     }
 
-    let hardwareKeyboardAttached: Bool
-    let sizeClass: SizeClass
-    /// Keys that scroll on compact software-keyboard layout, or the full
-    /// flexible row when scrolling is off.
+    /// Keys that scroll horizontally.
     let leadingItems: [InputShortcutStripItem]
-    /// Pinned trailing keys (Enter + More) on compact software-keyboard layout.
+    /// Pinned trailing keys (Enter + More).
     let trailingItems: [InputShortcutStripItem]
-    let usesHorizontalScroll: Bool
 
     var items: [InputShortcutStripItem] { leadingItems + trailingItems }
 
-    /// Today's Direct Input strip: navigation keys plus paste, Enter, More.
-    static let softwareKeyboardItems: [InputShortcutStripItem] = [
+    /// The Direct Input strip: navigation keys plus paste, Enter, More.
+    static let allItems: [InputShortcutStripItem] = [
         .key(.escape), .key(.tab), .key(.shiftTab),
         .key(.up), .key(.down), .key(.left), .key(.right),
         .key(.backspace), .key(.shiftEnter),
         .paste, .key(.enter), .more,
     ]
 
-    /// Terminal-only keys a hardware keyboard does not replace: Ctrl/Alt
-    /// chord entry, Shift-Enter, Ctrl-C, paste review, and Skills/Snippets.
-    static let hardwareKeyboardItems: [InputShortcutStripItem] = [
-        .controlModifier, .optionModifier, .key(.shiftEnter),
-        .interrupt, .paste, .more,
-    ]
-
-    init(hardwareKeyboardAttached: Bool, sizeClass: SizeClass) {
-        self.hardwareKeyboardAttached = hardwareKeyboardAttached
-        self.sizeClass = sizeClass
-        if hardwareKeyboardAttached {
-            leadingItems = Self.hardwareKeyboardItems
-            trailingItems = []
-            usesHorizontalScroll = false
-        } else if sizeClass == .compact {
-            leadingItems = Array(Self.softwareKeyboardItems.dropLast(2))
-            trailingItems = Array(Self.softwareKeyboardItems.suffix(2))
-            usesHorizontalScroll = true
-        } else {
-            leadingItems = Self.softwareKeyboardItems
-            trailingItems = []
-            usesHorizontalScroll = false
-        }
+    init() {
+        leadingItems = Array(Self.allItems.dropLast(2))
+        trailingItems = Array(Self.allItems.suffix(2))
     }
 }
 
@@ -89,11 +58,6 @@ enum InputChromeLayout {
     /// Visual width after scaling the paste control down to the key-cap size.
     static let pasteVisualWidth: CGFloat = 30
     static let pinnedFadeWidth: CGFloat = 8
-
-    /// Caps a short hardware-keyboard strip so five keys do not each stretch
-    /// to 200 pt on a 13-inch iPad. The group is centered; leftover space is
-    /// a consequence of that cap, not a leftover iPhone well.
-    static let maxFlexibleKeyWidth: CGFloat = 72
 
     /// Caps Terminal / Agent / Skills keyboard wells and centers them when
     /// the window is wider. A single row must not span a 1000 pt iPad.
@@ -136,10 +100,6 @@ enum InputChromeLayout {
             compactWidth(for: key)
         case .paste:
             pasteVisualWidth
-        case .controlModifier, .optionModifier:
-            compactEscapeTabWidth
-        case .interrupt:
-            compactShiftEnterWidth
         case .more:
             compactMoreWidth
         }
