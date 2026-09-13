@@ -11,14 +11,14 @@ Entries reference the issue that motivated them.
 
 - iPad is a first-class target again. App Store builds include iPhone and
   iPad, iPad supports all four interface orientations, and `make sim-ipad` /
-  `make test-ipad` run against the iPad simulator.
+  `make test-ipad` run against the iPad simulator. (PR #323)
 - Drag text and images into the Composer on iPad. Send stays disabled, with
   a visible "Waiting for image…" hint next to the button, until dropped
-  images finish staging.
+  images finish staging. (PR #323)
 - Hardware keyboard shortcuts: ⌘1–9 selects visible Agents, ⌘[ / ⌘] switches
   Agents, ⌘F searches, ⌘N starts an Agent, ⌘, opens Settings, ⌘⇧H opens Hosts,
   ⌘E switches Direct Input / Composer, ⌘Return sends the focused Composer draft,
-  and ⌘W closes the Agent view.
+  and ⌘W closes the Agent view. (PR #323)
 - On iPad, Heeler opens in more than one window and resizes freely under Stage
   Manager. Long-press an Agent and choose Open in New Window, or drag its row
   out; each window restores its own Agent after a relaunch. Windows on Agents
@@ -29,22 +29,22 @@ Entries reference the issue that motivated them.
   returning to the app leaves it where it was. A notification for an Agent
   already on screen brings that window forward instead of opening another,
   and a live window resize sends the Host one terminal resize once the
-  window settles.
+  window settles. (PR #323)
 
 ### Changed
 
 - Direct Input's More button matches the arrow key size and shortcut spacing,
-  with equal padding at the strip's outer edges.
+  with equal padding at the strip's outer edges. (PR #323)
 - The Terminal keyboard fills its dock width on iPhone and iPad without
   increasing its height. Character keys share one width across staggered
   rows, with wider Shift, Backspace, and Space keys. Agent and Skills
-  keyboard wells remain centered on wide screens.
+  keyboard wells remain centered on wide screens. (PR #323)
 - On iPad the Composer's tools dock, Direct Input's Keys dock, and the
   Shell terminal's Keys dock no longer leave the system keyboard's floating
-  candidate and prediction bar over the dock.
+  candidate and prediction bar over the dock. (PR #323)
 - iPad adapts its two-column Console to landscape and portrait, with a Show Agents
   action in empty detail, form sheets for Hosts, Settings, New Agent, Skills,
-  Rename, Snippets, and Worktree, plus Attach Links popovers.
+  Rename, Snippets, and Worktree, plus Attach Links popovers. (PR #323)
 
 ### Fixed
 
